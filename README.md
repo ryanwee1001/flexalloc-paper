@@ -1,6 +1,6 @@
 # FlexAlloc: Dynamic Memory Partioning between the Hostvisor and Corevisor in SeKVM
 
-This repository contains the TeX files used to generate the FlexAlloc research paper. For the FlexAlloc source code, see [this repository](github.com/nelsonm2991/host-sekvm-project).
+This repository contains the TeX files used to generate the FlexAlloc research paper. For the FlexAlloc source code, see [this repository](https://github.com/nelsonm2991/host-sekvm-project).
 
 ## Usage
 
