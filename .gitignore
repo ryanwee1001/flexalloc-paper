@@ -1,0 +1,8 @@
+# LaTeX artefacts
+*.aux
+*.bib
+*.log
+*.out
+
+# Paper
+*.pdf
