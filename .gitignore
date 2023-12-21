@@ -1,8 +1,12 @@
 # LaTeX artefacts
 *.aux
-*.bib
 *.log
 *.out
+
+# Bibliography artefacts
+*.bib
+*.bbl
+*.blg
 
 # Paper
 *.pdf

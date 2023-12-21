@@ -63,7 +63,7 @@
 \begin{filecontents}{\jobname.bib}
 %-------------------------------------------------------------------------------
 @Book{arpachiDusseau18:osbook,
-  author =       {Arpaci-Dusseau, Remzi H. and Arpaci-Dusseau Andrea C.},
+  author =       {-Dusseau, Remzi H. and Arpaci-Dusseau Andrea C.},
   title =        {Operating Systems: Three Easy Pieces},
   publisher =    {Arpaci-Dusseau Books, LLC},
   year =         2015,
@@ -88,20 +88,19 @@
 \date{}
 
 % make title bold and 14 pt font (Latex default is non-bold, 16 pt)
-\title{\Large \bf Formatting Submissions for a USENIX Conference:\\
-  An (Incomplete) Example}
+\title{\Large \bf FlexAlloc: Dynamic Memory Partitioning\\
+    between the Corevisor and Hostvisor in SeKVM}
 
 %for single author (just remove % characters)
 \author{
-{\rm Your N.\ Here}\\
-Your Institution
+{\rm Matthew Roger Nelson}\\
+Columbia University
 \and
-{\rm Second Name}\\
-Second Institution
-% copy the following lines to add more authors
-% \and
-% {\rm Name}\\
-%Name Institution
+{\rm Ryan Wee}\\
+Columbia University
+\and
+{\rm Zeheng Yang}\\
+Columbia University
 } % end author
 
 \maketitle
@@ -109,8 +108,26 @@ Second Institution
 %-------------------------------------------------------------------------------
 \begin{abstract}
 %-------------------------------------------------------------------------------
-Your abstract text goes here. Just a few facts. Whet our appetites.
-Not more than 200 words, if possible, and preferably closer to 150.
+SeKVM is a hypervisor for ARM processors that protects the memory of guest
+virtual machines (VMs) from an untrusted host machine. It comprises a
+\textit{corevisor} that runs at EL2, and a \textit{hostvisor} that runs at EL1
+to leverage the functionality of the untrusted host kernel. However, memory is
+statically partitioned at compile time between the corevisor and the hostvisor
+in SeKVM. This leads to memory wastage when the number of VMs is low, and an
+inability to support the desired number of VMs when the number of VMs is high.
+In this paper, we present FlexAlloc, an extension of SeKVM that allows dynamic
+runtime partitioning of memory between the corevisor and the hostvisor. In
+particular, the memory needed for the stage-2 page tables of a guest VM is
+only allocated to the corevisor when a VM is created. This memory is also
+returned to the hostvisor when a VM is destroyed. Existing implementions
+of \textit{alloc\_pages} do not support allocating a contiguous region of memory
+equal in size to the memory needed for a VM's stage-2 page tables. Hence,
+FlexAlloc also modifies the iterators used to accesss a VM's stage-2 page
+tables, so that the memory used for a VM's stage-2 page tables can be composed
+of noncontiguous regions. Our work ensures that a machine running SeKVM uses
+memory more efficiently, and also allows such machines to support a larger
+number of guest VMs. This allows public cloud providers and organizations
+running their own VMs to scale up their operations at a lower cost.
 \end{abstract}
 
 
@@ -238,18 +255,7 @@ tex files via the shell. And \texttt{bibtex}, of course. Works for us.
 \section*{Acknowledgments}
 %-------------------------------------------------------------------------------
 
-The USENIX latex style is old and very tired, which is why
-there's no \textbackslash{}acks command for you to use when
-acknowledging. Sorry.
-
-%-------------------------------------------------------------------------------
-\section*{Availability}
-%-------------------------------------------------------------------------------
-
-USENIX program committees give extra points to submissions that are
-backed by artifacts that are publicly available. If you made your code
-or data available, it's worth mentioning this fact in a dedicated
-section.
+Shih-Wei Li, Xupeng Li, Ronghui Gu, Jason Nieh, and John Zhuang Hui
 
 %-------------------------------------------------------------------------------
 \bibliographystyle{plain}

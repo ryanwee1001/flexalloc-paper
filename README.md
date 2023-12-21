@@ -4,10 +4,13 @@ This repository contains the TeX files used to generate the FlexAlloc research p
 
 ## Usage
 
-To compile the paper, install `pdflatex` and run:
+To compile the paper, run:
 
 ```bash
-pdflatex paper
+rm -rf paper.bib
+pdflatex paper      # Generate paper.bib
+bibtex paper
+pdflatex paper      # Compile with paper.bib
 ```
 
 ## Dependencies
