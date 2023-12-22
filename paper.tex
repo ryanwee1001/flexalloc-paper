@@ -131,7 +131,13 @@
     author =        {XuhengLi (GitHub username)},
     title =         {el2.c in osdi23-paper114-sekvm},
     howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/hypsec_proved/el2.c}},
-    note =          {Accessed: 2023-12-21}       
+    note =          {Accessed: 2023-12-22}       
+}
+@Misc{hypsec_host.h,
+    author =        {XuhengLi (GitHub username)},
+    title =         {hypsec\_host.h in osdi23-paper114-sekvm},
+    howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/include/asm/hypsec_host.h}},
+    note =          {Accessed: 2023-12-22}       
 }
 \end{filecontents}
 
@@ -240,11 +246,10 @@ stage-2 page tables so that guest VMs write their data to memory that can be
 accessed and manipulated by the hostvisor. In other words, the memory used for
 these stage-2 page tables must `belong' to the corevisor. In SeKVM,
 the corevisor is statically allocated this memory on bootup. This is done by
-a linker script, \textit{arch/arm64/kernel/vmlinux.lds.S}~\cite{vmlinux.lds.S}, which allocates some
+a linker script, which allocates some
 contiguous region of memory for the stage-2 page tables and demarcates it using the labels \textit{stage2\_pgs\_start}
-and \textit{stage2\_pgs\_end}. The size of this memory region is
-determined by the macro \textit{STAGE2\_PAGES\_SIZE}, which is defined in
-\textit{arch/arm64/include/asm/kernel-pgtable.h}~\cite{kernel-pgtable.h}. In
+and \textit{stage2\_pgs\_end}~\cite{vmlinux.lds.S}. The size of this memory region is
+determined by the macro \textit{STAGE2\_PAGES\_SIZE}~\cite{kernel-pgtable.h}. In
 particular, this memory region is large enough to store the stage-2 page table
 for the corevisor, the stage-2 page table for the hostvisor,
 and the stage-2 page tables for sixteen guest VMs. The corevisor and hostvisor are
@@ -296,7 +301,7 @@ used to store the metadata of each guest VM. SeKVM could potentially also benefi
 from dynamic allocation of the memory used to store this VM metadata, where
 this memory is only given to the corevisor upon VM creation and returned to the
 hostvisor upon VM deletion. However,
-we chose not to focus on this because the size of each \textit{struct el2\_vm\_info} object
+we choose not to focus on this because the size of each \textit{struct el2\_vm\_info} object
 is 768 bytes. The total size of all of the \textit{struct el2\_vm\_info} objects
 is 12288 bytes, which is less than four 4K pages in total. As a result, the
 problem of unused memory is not as significant, since we waste at most four
@@ -326,17 +331,22 @@ pass this memory region to the corevisor. The kernel macro \textit{alloc\_pages}
 is responsible for allocating a large number of contiguous physical pages~\cite{kerneldocs}.
 Examining the implementation of this macro reveals that it eventually
 calls \textit{\_\_alloc\_pages\_nodemask}, which checks that the order requested
-is strictly less than \textit{MAX\_ORDER}~\cite{page_alloc.c}. This
+is strictly less than \textit{MAX\_ORDER}~\cite{page_alloc.c}. \textit{MAX\_ORDER}
 is in turn defined to be 11~\cite{mmzone.h}. This means that we cannot allocate
-a contiguous region of memory larger than $2^{10} * 4K = 4M$.
+a contiguous region of memory larger than $2^{10} * 4K = 4M$. This
+limit is set by the kernel because \textit{alloc\_pages} uses the buddy allocator,
+which recursively splits available memory into half to find the best possible position for
+a contiguous region of memory~\cite{kerneldocs}. However, this also makes it
+undesirable to continuously allocate huge contiguous regions of memory.
 
 To get around this limitation, there are two possible approaches. The first approach
 is to halve the size of the VM's stage-2 page table, so that it can fit within
 a single contiguous 4M region of memory. Alternatively, we can fragment the VM's stage-2
-page table such that it can be composed of non-contiguous regions of memory. We
-chose to implement the latter approach to avoid degrading VM performance. In
-particular, we fragmented the VM's stage-2 page table so that it could be composed
-of eight distinct 1M regions of memory. Each of these regions must be contiguous,
+page table such that it can be composed of multiple non-contiguous regions of memory, whose sizes in total add up to 8M. We
+choose to implement the latter approach to avoid degrading VM performance, and to avoid
+breaking the current implementation of the buddy allocator. In
+particular, we fragment the VM's stage-2 page table so that it can be composed
+of eight distinct 1M regions of memory. Each of these 1M regions must be contiguous,
 but each region is distinct and need not be allocated contiguously with the
 other 1M regions. As a result, the hostvisor can easily use \textit{alloc\_pages}
 to allocate the memory needed for a guest VM's stage-2 page tables.
@@ -345,7 +355,7 @@ We implement this fragmentation by manipulating the iterators used to traverse
 the guest VM's stage-2 page table. In particular, the VM's stage-2 page table
 is a four-level page table, comprising a page global directory (PGD), a
 page upper directory (PUD), a page middle directory (PMD), and multiple page table
-entries (PTEs). TODO
+entries (PTEs). TODO (Matthew - Page table fragmentation)
 
 \subsection{Allocating memory to the corevisor}
 
@@ -354,12 +364,14 @@ VM is created. It does so by passing the base addresses of these eight 1M
 regions as arguments to the \textit{HVC\_REGISTER\_KVM} hypercall. An alternative
 implementation that we considered was creating a new \textit{HVC\_PASS\_MEM} hypercall to pass these
 1M regions to the corevisor, and getting the hostvisor to call \textit{HVC\_PASS\_MEM}
-before calling \textit{HVC\_REGISTER\_KVM}. However, we ultimately chose to
+before calling \textit{HVC\_REGISTER\_KVM}. However, we ultimately choose to
 discard this alternative design because it leads to a more complicated
 implementation. In particular, the corevisor would have to verify a one-to-one
 correspondence between calls to \textit{HVC\_PASS\_MEM} and \textit{HVC\_REGISTER\_KVM}.
 It would also have to handle malicious hostvisors that try to call 
-\textit{HVC\_REGISTER\_KVM} without calling \textit{HVC\_PASS\_MEM}.
+\textit{HVC\_REGISTER\_KVM} without calling \textit{HVC\_PASS\_MEM}. Morevoer,
+adding an extra hypercall increases latency because it leads to more frequent
+world-switches between the hostvisor running in EL1 and the corevisor running in EL2.
 
 The \textit{HVC\_REGISTER\_KVM} hypercall eventually calls \textit{register\_kvm}
 ~\cite{el2.c}. Note that at this point we are in the corevisor, running at EL2.
@@ -402,7 +414,7 @@ for (i = 0; i < 8; ++i) {
 }
 \end{verbatim}
 
-We then build the VM's stage-2 page table using these eight 1M regions, by
+\noindent We then build the VM's stage-2 page table using these eight 1M regions, by
 populating the relevant fields in the \textit{struct el2\_data} object used
 by the corevisor for VM management.
 
@@ -416,7 +428,7 @@ the corevisor when a VM is destroyed. Hence, we create a new \textit{HVC\_DESTRO
 hypercall that mirrors the \textit{HVC\_REGISTER\_KVM} hypercall used during VM
 creation. In particular, on ARM architectures, if the \textit{CONFIG\_VERIFIED\_KVM} macro is defined,
 we call \textit{hypsec\_arch\_destroy\_vm}. This function in turn calls \textit{hypsec\_destroy\_kvm},
-which ultimately invokes \textit{HVC\_REGISTER\_KVM} hypercall with the corresponding
+which ultimately invokes the \textit{HVC\_REGISTER\_KVM} hypercall with the corresponding
 VMID. We do not pass the base addresses of the eight 1M memory regions as arguments
 to this hypercall, since the corevisor can access them directly by reading the
 relevant fields of the \textit{struct el2\_data} object. Once we are in the
@@ -428,71 +440,91 @@ on each of the eight 1M regions.
 \section{Evaluation}
 %-------------------------------------------------------------------------------
 
-TODO
+We evaluate FlexAlloc by TODO
 
 %-------------------------------------------------------------------------------
-\section{Future Work}
+\section{Shortcomings and Future Work}
 %-------------------------------------------------------------------------------
 
-Not verified
+One key shortcoming of FlexAlloc is that it is not formally verified. In
+this sense, FlexAlloc is less like SeKVM and more like HypSec. It provides isolation guarantees
+in principle, but cannot be logically proven to be secure. In particular, there
+are a few major flaws in FlexAlloc when it comes to isolating guest VMs from
+the host machine. For instance, the current implementation of FlexAlloc
+does not use \textit{memset} to zero out the memory given to it by the hostvisor
+for the VM's stage-2 page table. This presents a danger if the MMU tries to
+read from a page table entry that should not actually exist, but that has
+previously been written into the memory region by the hostvisor. Another flaw is that
+FlexAlloc does not verify that the eight 1M regions are actually distinct and
+do not overlap with one another. Hence, FlexAlloc still fundamentally relies on
+a non-malicious hostvisor, and would require further patches to be fully secure.
 
-Doesn't memset, doesn't verify the eight 1M regions don't overlap
+Another key shortcoming of our project is that it does not fully implement
+dynamic memory partitioning between the corevisor and hostvisor. As mentioned in
+the introduction, another area in which corevisor memory scales with the number
+of VMs is in maintaining \textit{struct el2\_vm\_info} objects that record the
+metadata associated with each guest VM. Currently, we still statically allocate
+a fixed-size array of \textit{struct el2\_vm\_info} objects in corevisor
+memory ~\cite{hypsec_host.h}. This essentially preserves the hard cap on the
+number of guest VMs that can be run. An easy fix would be to keep this array
+as a statically-allocated array, while increasing the number of elements. Since each
+\textit{struct el2\_vm\_info} object is only 768 bytes, this would not waste a 
+significant amount of memory even if fewer than sixteen VMs are created.
 
-One key shortcoming of our project is that it does not fully implement
+We also do not fully evaluate our implementation by trying to run a large number
+of VMs. To do this, we would have to modify the macros used to define the current
+sixteen-VM limit. It is entirely conceivable that the hostvisor might not be able
+to allocate 1M contiguous regions of memory past a certain point if memory
+pressure and external fragmentation are high. In this case, the hostvisor would
+not be able to allocate the memory regions needed for the corevisor to create
+the stage-2 page table for a new VM. We could perhaps delay this limit by breaking
+the VM stage-2 page tables down into even smaller regions of memory, but this would
+likely lead to more complicated logic when traversing the page table.
+
+Another possible area of future work is exploring other allocators designed for
+allocating large chunks of contiguous memory. We fragment the VM stage-2 page tables
+into eight distinct 1M pages, because \textit{alloc\_pages} does not allow us
+to allocate contiguous regions larger than 4M. It might be possile to avoid this
+by looking at other Linux memory allocators explicitly designed for the purpose
+of large contiguous allocations.
+
+TODO (Matthew - DPM)
 
 %-------------------------------------------------------------------------------
 \section{Conclusions}
 %-------------------------------------------------------------------------------
 
-We have designed and implemented FlexAlloc, a system for 
+We have designed and implemented FlexAlloc, a system for dynamic memory
+partitioning between the corevisor and hostvisor in SeKVM. 
 
 %-------------------------------------------------------------------------------
-% \section{Footnotes, Verbatim, and Citations}
+\section*{Acknowledgments}
 %-------------------------------------------------------------------------------
 
-% Footnotes should be places after punctuation characters, without any
-% spaces between said characters and footnotes, like so.
-% \footnote{Remember that USENIX format stopped using endnotes and is
-%   now using regular footnotes.} And some embedded literal code may
-% look as follows.
+Shih-Wei Li, John S. Koh, and Jason Nieh implemented HypSec, which serves as
+the predecessor to SeKVM. Shih-Wei Li, Xupeng Li, Ronghui Gu, Jason Nieh, and
+John Zhuang Hui implemented and formally verified SeKVM. Xuheng Li wrote a
+helpful set of notes describing the boot and initialization process in SeKVM,
+as well as the steps needed to build and run SeKVM~\cite{xuheng}. Jason Nieh and
+Xuheng Li provided helpful comments on the project and helped with the design
+of FlexAlloc. This paper was written as part of the class COMS E6118 Operating
+Systems II at Columbia University.
 
-% \begin{verbatim}
-% int main(int argc, char *argv[]) 
-% {
-%     return 0;
-% }
-% \end{verbatim}
+%-------------------------------------------------------------------------------
+\bibliographystyle{plain}
+\bibliography{\jobname}
 
-% Now we're going to cite somebody. Watch for the cite tag. Here it
-% comes. Arpachi-Dusseau and Arpachi-Dusseau co-authored an excellent OS
-% book, which is also really funny~\cite{arpachiDusseau18:osbook}, and
-% Waldspurger got into the SIGOPS hall-of-fame due to his seminal paper
-% about resource management in the ESX hypervisor~\cite{waldspurger02}.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\end{document}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% The tilde character (\~{}) in the tex source means a non-breaking
-% space. This way, your reference will always be attached to the word
-% that preceded it, instead of going to the next line.
-
-% And the 'cite' package sorts your citations by their numerical order
-% of the corresponding references at the end of the paper, ridding you
-% from the need to notice that, e.g, ``Waldspurger'' appears after
-% ``Arpachi-Dusseau'' when sorting references
-% alphabetically~\cite{sekvm,hypsec}. 
-
-% It'd be nice and thoughtful of you to include a suitable link in each
-% and every bibtex entry that you use in your submission, to allow
-% reviewers (and other readers) to easily get to the cited work, as is
-% done in all entries found in the References section of this document.
-
-% Now we're going take a look at Section~\ref{sec:figs}, but not before
-% observing that refs to sections and citations and such are colored and
-% clickable in the PDF because of the packages we've included.
+%%  LocalWords:  endnotes includegraphics fread ptr nobj noindent
+%%  LocalWords:  pdflatex acks
 
 %-------------------------------------------------------------------------------
 % \section{Floating Figures and Lists}
 % \label{sec:figs}
 %-------------------------------------------------------------------------------
-
 
 %---------------------------
 % \begin{figure}
@@ -542,32 +574,3 @@ We have designed and implemented FlexAlloc, a system for
 %   who separated usenix.sty from this file to allow for easy
 %   inclusion.
 % \end{description}
-
-% \noindent
-% The noindent at the start of this paragraph in its tex version makes
-% it clear that it's a continuation of the preceding paragraph, as
-% opposed to a new paragraph in its own right.
-
-%-------------------------------------------------------------------------------
-\section*{Acknowledgments}
-%-------------------------------------------------------------------------------
-
-Shih-Wei Li, John S. Koh, and Jason Nieh implemented HypSec, which serves as
-the predecessor to SeKVM. Shih-Wei Li, Xupeng Li, Ronghui Gu, Jason Nieh, and
-John Zhuang Hui implemented and formally verified SeKVM. Xuheng Li wrote a
-helpful set of notes describing the boot and initialization process in SeKVM,
-as well as the steps needed to build and run SeKVM~\cite{xuheng}. Jason Nieh and
-Xuheng Li provided helpful comments on the project and helped with the design
-of FlexAlloc. This paper was written as part of the class COMS E6118 Operating
-Systems II at Columbia University.
-
-%-------------------------------------------------------------------------------
-\bibliographystyle{plain}
-\bibliography{\jobname}
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\end{document}
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-%%  LocalWords:  endnotes includegraphics fread ptr nobj noindent
-%%  LocalWords:  pdflatex acks
