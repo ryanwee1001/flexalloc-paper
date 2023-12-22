@@ -319,6 +319,7 @@ incurring much memory overhead.
 %-------------------------------------------------------------------------------
 
 All of the source code described below can be found at \url{https://github.com/nelsonm2991/host-sekvm-project}.
+Our implementation of FlexAlloc is based on SeKVM, which is in turn based on Linux v5.4.55.
 
 \subsection{Modifying the page table iterators}
 
@@ -440,11 +441,29 @@ on each of the eight 1M regions.
 \section{Evaluation}
 %-------------------------------------------------------------------------------
 
-We evaluate FlexAlloc by TODO
+We evaluate FlexAlloc by running it on a QEMU-emulated Raspberry Pi 4. In
+particular, we run VMWare Fusion Professional Version 13.0.2 on an M1 Macbook
+Air running MacOS Ventura 13.6. Using VMWare, we create a VM
+with 2 processor cores and 8704 MB memory running Ubuntu 22.04.3 LTS. On this
+VM, we run QEMU 6.2.0 to emulate a Raspberry Pi 4. This emulated Raspberry
+Pi 4 serves as our host machine, on which we run FlexAlloc. Our guest VMs 
+run vanilla Linux v5.4.
+
+Using FlexAlloc, we boot up a guest VM and verify that it is able to start up
+without any kernel panics. We use \textit{print\_string} to verify that we
+are passing eight distinct 1M regions to the corevisor when the VM is created.
+We test a case where the 1M regions are not contiguous, and verify that our
+modified page table iterators are able to successfully handle a VM stage-2 page
+table that is non-contiguous. We also shut down the guest VM and verify that
+all eight 1M regions are returned to the hostvisor. We compare the base address
+of each region allocated during VM creation against the base address of each
+region reclaimed during VM shutdown, and verify that they match each other.
 
 %-------------------------------------------------------------------------------
 \section{Shortcomings and Future Work}
 %-------------------------------------------------------------------------------
+
+\subsection{Shortcomings in design}
 
 One key shortcoming of FlexAlloc is that it is not formally verified. In
 this sense, FlexAlloc is less like SeKVM and more like HypSec. It provides isolation guarantees
@@ -459,7 +478,7 @@ FlexAlloc does not verify that the eight 1M regions are actually distinct and
 do not overlap with one another. Hence, FlexAlloc still fundamentally relies on
 a non-malicious hostvisor, and would require further patches to be fully secure.
 
-Another key shortcoming of our project is that it does not fully implement
+Another key shortcoming of our design is that it does not fully implement
 dynamic memory partitioning between the corevisor and hostvisor. As mentioned in
 the introduction, another area in which corevisor memory scales with the number
 of VMs is in maintaining \textit{struct el2\_vm\_info} objects that record the
@@ -471,7 +490,9 @@ as a statically-allocated array, while increasing the number of elements. Since 
 \textit{struct el2\_vm\_info} object is only 768 bytes, this would not waste a 
 significant amount of memory even if fewer than sixteen VMs are created.
 
-We also do not fully evaluate our implementation by trying to run a large number
+\subsection{Shortcomings in evaluation}
+
+We also do not fully evaluate our implementation. For one, we do not stress-test our implementation by running a large number
 of VMs. To do this, we would have to modify the macros used to define the current
 sixteen-VM limit. It is entirely conceivable that the hostvisor might not be able
 to allocate 1M contiguous regions of memory past a certain point if memory
@@ -479,9 +500,19 @@ pressure and external fragmentation are high. In this case, the hostvisor would
 not be able to allocate the memory regions needed for the corevisor to create
 the stage-2 page table for a new VM. We could perhaps delay this limit by breaking
 the VM stage-2 page tables down into even smaller regions of memory, but this would
-likely lead to more complicated logic when traversing the page table.
+likely lead to more complicated logic when traversing the page table. In addition, we do not verify whether fragmenting the stage-2 page table results
+in any degradation in VM performance. Ideally, we would run a memory-intensive
+benchmark on our guest VMs to verify that our iterators work properly under a
+high memory load. Finally, we do not quantify the change in corevisor memory usage.
+We assume that by not allocating the memory for VM stage-2 page tables at bootup,
+corevisor memory will automatically be reduced by an amount matching the
+size of this static allocation. This should be verified using actual data. For
+instance, we could periodically iterate over every page and see how many pages
+are owned by the corevisor before and after VM creation.
 
-Another possible area of future work is exploring other allocators designed for
+\subsection{Future work}
+
+A possible area of future work is exploring other allocators designed for
 allocating large chunks of contiguous memory. We fragment the VM stage-2 page tables
 into eight distinct 1M pages, because \textit{alloc\_pages} does not allow us
 to allocate contiguous regions larger than 4M. It might be possile to avoid this
