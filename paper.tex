@@ -495,7 +495,16 @@ TODO (Matthew - DPM)
 %-------------------------------------------------------------------------------
 
 We have designed and implemented FlexAlloc, a system for dynamic memory
-partitioning between the corevisor and hostvisor in SeKVM. 
+partitioning between the corevisor and hostvisor in SeKVM. In particular, we
+modify SeKVM so that the hostvisor allocates memory to the corevisor when a VM is
+created, and reclaims memory from the corevisor when a VM is destroyed. As a
+result, the memory for a VM's stage-2 page table does not need to be statically
+allocated to the corevisor upon bootup. This system reduces the wastage of memory
+when VM demand is low, and increases the number of VMs that can be run
+on a single machine when VM demand is high. We also make a distinct contribution in terms of fragmenting
+a VM's stage-2 page table so that it can be composed of multiple noncontiguous
+regions of memory, instead of a single contiguous 8M region. Altogether, this
+system improves hardware utilization and reduces VM operating costs.
 
 %-------------------------------------------------------------------------------
 \section*{Acknowledgments}
