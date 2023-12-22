@@ -109,6 +109,30 @@
     howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/hypsec_proved/el1.c}},
     note =          {Accessed: 2023-12-21}       
 }
+@Misc{kerneldocs,
+    author =        {kernel.org},
+    title =         {Chapter 6: Physical Page Allocation},
+    howpublished =  {\url{https://www.kernel.org/doc/gorman/html/understand/understand009.html}},
+    note =          {Accessed: 2023-12-22}
+}
+@Misc{page_alloc.c,
+    author =        {Elixir Bootlin},
+    title =         {page\_alloc.c in Linux v5.4.55},
+    howpublished =  {\url{https://elixir.bootlin.com/linux/v5.4.55/source/mm/page_alloc.c#L4718}},
+    note =          {Accessed: 2023-12-22}
+}
+@Misc{mmzone.h,
+    author =        {Elixir Bootlin},
+    title =         {mmzone.h in Linux v5.4.55},
+    howpublished =  {\url{https://elixir.bootlin.com/linux/v5.4.55/source/include/linux/mmzone.h#L27}},
+    note =          {Accessed: 2023-12-22}
+}
+@Misc{el2.c,
+    author =        {XuhengLi (GitHub username)},
+    title =         {el2.c in osdi23-paper114-sekvm},
+    howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/hypsec_proved/el2.c}},
+    note =          {Accessed: 2023-12-21}       
+}
 \end{filecontents}
 
 % %-------------------------------------------------------------------------------
@@ -277,25 +301,128 @@ is 768 bytes. The total size of all of the \textit{struct el2\_vm\_info} objects
 is 12288 bytes, which is less than four 4K pages in total. As a result, the
 problem of unused memory is not as significant, since we waste at most four
 4K pages of memory. In any case, memory can only be allocated at the
-page granularity. Hence, in the case where we want to create a new VM and there is no 
-more space in the existing dynamically-allocated memory for the new \textit{struct el2\_vm\_info} object, we would
-inevitably end up allocating an entirely new 4K page, the majority of which would remain unused. (This
+page granularity. Hence, in the case where we want to create a new VM and the new \textit{struct el2\_vm\_info} object
+cannot be placed into the pages that have already been dynamically allocated to the corevisor, we will
+inevitably end up having to allocate an entirely new 4K page. The majority of this new 4K page would then remain unused, until another VM is created. This
 is not the case with VM stage-2 page tables, since the size of the stage-2 page
-table for each VM is nicely page-aligned.) The problem of a hard upper limit
+table for each VM is nicely page-aligned. With the \textit{struct el2\_vm\_info} objects, the problem of a hard upper limit
 is also not as significant, since we could easily make the array larger without
 incurring much memory overhead.
 
 %-------------------------------------------------------------------------------
-\section{Design}
+\section{Design and Implementation}
 %-------------------------------------------------------------------------------
 
-TODO
+All of the source code described below can be found at \url{https://github.com/nelsonm2991/host-sekvm-project}.
 
-%-------------------------------------------------------------------------------
-\section{Implementation}
-%-------------------------------------------------------------------------------
+\subsection{Modifying the page table iterators}
 
-TODO
+As described above, the original implementation of SeKVM statically
+allocates sixteen contiguous 8M regions to the corevisor. When a VM is created,
+the corevisor uses one of these contiguous 8M regions for the VM's stage-2
+page table. To implement a system of dynamic allocation, we want the hostvisor
+to dynamically reserve a contiguous 8M region at runtime when a VM is created, and then
+pass this memory region to the corevisor. The kernel macro \textit{alloc\_pages}
+is responsible for allocating a large number of contiguous physical pages~\cite{kerneldocs}.
+Examining the implementation of this macro reveals that it eventually
+calls \textit{\_\_alloc\_pages\_nodemask}, which checks that the order requested
+is strictly less than \textit{MAX\_ORDER}~\cite{page_alloc.c}. This
+is in turn defined to be 11~\cite{mmzone.h}. This means that we cannot allocate
+a contiguous region of memory larger than $2^{10} * 4K = 4M$.
+
+To get around this limitation, there are two possible approaches. The first approach
+is to halve the size of the VM's stage-2 page table, so that it can fit within
+a single contiguous 4M region of memory. Alternatively, we can fragment the VM's stage-2
+page table such that it can be composed of non-contiguous regions of memory. We
+chose to implement the latter approach to avoid degrading VM performance. In
+particular, we fragmented the VM's stage-2 page table so that it could be composed
+of eight distinct 1M regions of memory. Each of these regions must be contiguous,
+but each region is distinct and need not be allocated contiguously with the
+other 1M regions. As a result, the hostvisor can easily use \textit{alloc\_pages}
+to allocate the memory needed for a guest VM's stage-2 page tables.
+
+We implement this fragmentation by manipulating the iterators used to traverse
+the guest VM's stage-2 page table. In particular, the VM's stage-2 page table
+is a four-level page table, comprising a page global directory (PGD), a
+page upper directory (PUD), a page middle directory (PMD), and multiple page table
+entries (PTEs). TODO
+
+\subsection{Allocating memory to the corevisor}
+
+FlexAlloc dynamically allocates eight 1M memory regions to the corevisor when a
+VM is created. It does so by passing the base addresses of these eight 1M
+regions as arguments to the \textit{HVC\_REGISTER\_KVM} hypercall. An alternative
+implementation that we considered was creating a new \textit{HVC\_PASS\_MEM} hypercall to pass these
+1M regions to the corevisor, and getting the hostvisor to call \textit{HVC\_PASS\_MEM}
+before calling \textit{HVC\_REGISTER\_KVM}. However, we ultimately chose to
+discard this alternative design because it leads to a more complicated
+implementation. In particular, the corevisor would have to verify a one-to-one
+correspondence between calls to \textit{HVC\_PASS\_MEM} and \textit{HVC\_REGISTER\_KVM}.
+It would also have to handle malicious hostvisors that try to call 
+\textit{HVC\_REGISTER\_KVM} without calling \textit{HVC\_PASS\_MEM}.
+
+The \textit{HVC\_REGISTER\_KVM} hypercall eventually calls \textit{register\_kvm}
+~\cite{el2.c}. Note that at this point we are in the corevisor, running at EL2.
+Within this function, we preprocess the eight 1M regions to ensure that the
+calls to \textit{alloc\_pages} in the hostvisor were successful, and to verify
+that the memory regions provided actually belong to the hostvisor. We then set
+the ownership of these memory regions to the corevisor, so that the host can
+no longer access or manipulate the guest VM's stage-2 page tables. In particular,
+we do the following:
+
+\begin{verbatim}
+for (i = 0; i < 8; ++i) {
+    addr = page_starts[i];
+    end = page_starts[i] + SZ_1M;
+    
+    /* ... */
+    
+    if (addr == 0) {
+        // Hostvisor's alloc_pages() failed.
+        __hyp_panic();
+    }
+
+    // Change the ownership of these pages
+    // to the corevisor.
+    do {
+        index = get_s2_page_index(addr);
+        owner = get_s2_page_vmid(index);
+
+        if (owner != HOSTVISOR) {
+            // The hostvisor shouldn't be
+            // giving memory that belongs
+            // to the corevisor or to a VM.
+            __hyp_panic();
+        }
+
+        set_s2_page_vmid(index, COREVISOR);
+        addr += PAGE_SIZE;
+        ++page_cnt;
+    } while (addr < end);
+}
+\end{verbatim}
+
+We then build the VM's stage-2 page table using these eight 1M regions, by
+populating the relevant fields in the \textit{struct el2\_data} object used
+by the corevisor for VM management.
+
+\subsection{Reclaiming memory from the corevisor}
+
+When a VM is destroyed, FlexAlloc reclaims the eight 1M memory regions that were
+previously allocated to the corevisor for the VM's stage-2 page table. Returning
+this memory to the hostvisor ensures that it does not remain unused in corevisor
+memory. Unlike the case of VM creation, there is no hypercall made directly to
+the corevisor when a VM is destroyed. Hence, we create a new \textit{HVC\_DESTROY\_KVM}
+hypercall that mirrors the \textit{HVC\_REGISTER\_KVM} hypercall used during VM
+creation. In particular, on ARM architectures, if the \textit{CONFIG\_VERIFIED\_KVM} macro is defined,
+we call \textit{hypsec\_arch\_destroy\_vm}. This function in turn calls \textit{hypsec\_destroy\_kvm},
+which ultimately invokes \textit{HVC\_REGISTER\_KVM} hypercall with the corresponding
+VMID. We do not pass the base addresses of the eight 1M memory regions as arguments
+to this hypercall, since the corevisor can access them directly by reading the
+relevant fields of the \textit{struct el2\_data} object. Once we are in the
+corevisor running in EL2, we return the eight memory regions to the hostvisor.
+We then return to the hostvisor running in EL1, which can then call \textit{\_\_free\_pages}
+on each of the eight 1M regions.
 
 %-------------------------------------------------------------------------------
 \section{Evaluation}
@@ -307,13 +434,17 @@ TODO
 \section{Future Work}
 %-------------------------------------------------------------------------------
 
-TODO
+Not verified
+
+Doesn't memset, doesn't verify the eight 1M regions don't overlap
+
+One key shortcoming of our project is that it does not fully implement
 
 %-------------------------------------------------------------------------------
 \section{Conclusions}
 %-------------------------------------------------------------------------------
 
-TODO
+We have designed and implemented FlexAlloc, a system for 
 
 %-------------------------------------------------------------------------------
 % \section{Footnotes, Verbatim, and Citations}
@@ -417,24 +548,17 @@ TODO
 % it clear that it's a continuation of the preceding paragraph, as
 % opposed to a new paragraph in its own right.
 
-
-% \subsection{LaTeX-ing Your TeX File}
-%-----------------------------------
-
-% People often use \texttt{pdflatex} these days for creating pdf-s from
-% tex files via the shell. And \texttt{bibtex}, of course. Works for us.
-
 %-------------------------------------------------------------------------------
 \section*{Acknowledgments}
 %-------------------------------------------------------------------------------
 
 Shih-Wei Li, John S. Koh, and Jason Nieh implemented HypSec, which serves as
 the predecessor to SeKVM. Shih-Wei Li, Xupeng Li, Ronghui Gu, Jason Nieh, and
-John Zhuang Hui implemented and formally verfiied SeKVM. Xuheng Li wrote a
+John Zhuang Hui implemented and formally verified SeKVM. Xuheng Li wrote a
 helpful set of notes describing the boot and initialization process in SeKVM,
 as well as the steps needed to build and run SeKVM~\cite{xuheng}. Jason Nieh and
 Xuheng Li provided helpful comments on the project and helped with the design
-on FlexAlloc. This paper was written as part of the class COMS E6118 Operating
+of FlexAlloc. This paper was written as part of the class COMS E6118 Operating
 Systems II at Columbia University.
 
 %-------------------------------------------------------------------------------
