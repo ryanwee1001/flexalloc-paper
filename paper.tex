@@ -78,11 +78,36 @@
   pages =        {3953--3970},
   note =         {\url{https://www.usenix.org/system/files/sec21-li-shih-wei.pdf}}
 }
-@Unpublished{xuheng,
-    author =     {Li, Xuheng},
-    title =      {Fall 23 Operating Systems 2 Homework},
-    year =       {2023},
-    note =       {\url{https://xuhengli.notion.site}}
+@Misc{xuheng,
+    author =        {Li, Xuheng},
+    title =         {\text{Fall 23 Operating Systems 2 Homework}},
+    year =          {2023},
+    howpublished =  {\url{https://xuhengli.notion.site}},
+    note =          {Accessed: 2023-12-21}
+}
+@Misc{arm,
+    author =        {ARM Developer Documentation},
+    title =         {Learn the architecture - AArch64 virtualization},
+    howpublished =  {\url{https://developer.arm.com/documentation/102142/0100/Stage-2-translation}},
+    note =          {Accessed: 2023-12-21}
+}
+@Misc{vmlinux.lds.S,
+    author =        {XuhengLi (GitHub username)},
+    title =         {vmlinux.lds.S in osdi23-paper114-sekvm},
+    howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/kernel/vmlinux.lds.S}},
+    note =          {Accessed: 2023-12-21}
+}
+@Misc{kernel-pgtable.h,
+    author =        {XuhengLi (GitHub username)},
+    title =         {kernel-pagetable.h in osdi23-paper114-sekvm},
+    howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/include/asm/kernel-pgtable.h}},
+    note =          {Accessed: 2023-12-21}
+}
+@Misc{el1.c,
+    author =        {XuhengLi (GitHub username)},
+    title =         {el1.c in osdi23-paper114-sekvm},
+    howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/hypsec_proved/el1.c}},
+    note =          {Accessed: 2023-12-21}       
 }
 \end{filecontents}
 
@@ -116,15 +141,15 @@ Columbia University
 %-------------------------------------------------------------------------------
 SeKVM is a hypervisor for ARM processors that protects the memory of guest
 virtual machines (VMs) from an untrusted host machine. It comprises a
-\textit{corevisor} that runs at EL2, and a \textit{hostvisor} that runs at EL1
-to leverage the functionality of the untrusted host kernel. However, memory is
-statically partitioned at compile time between the corevisor and the hostvisor
-in SeKVM. This leads to memory wastage when the number of VMs is low, and an
+corevisor that runs at EL2, and a hostvisor that runs at EL1
+to leverage the functionality of the untrusted host kernel. However, SeKVM
+statically partitions memory between the corevisor and hostvisor at compile
+time. This leads to memory wastage when the number of VMs is low, and an
 inability to support the desired number of VMs when the number of VMs is high.
 In this paper, we present FlexAlloc, an extension of SeKVM that allows dynamic
 runtime partitioning of memory between the corevisor and the hostvisor. In
 particular, the memory needed for the stage-2 page tables of a guest VM is
-only allocated to the corevisor when a VM is created. This memory is also
+only allocated to the corevisor when a VM is created. This memory is then
 returned to the hostvisor when a VM is destroyed. Existing implementions
 of \textit{alloc\_pages} do not support allocating a contiguous region of memory
 equal in size to the memory needed for a VM's stage-2 page tables. Hence,
@@ -136,12 +161,159 @@ number of guest VMs. This allows public cloud providers and organizations
 running their own VMs to scale up their operations at a lower cost.
 \end{abstract}
 
+%-------------------------------------------------------------------------------
+\section{Introduction and Background}
+%-------------------------------------------------------------------------------
+
+Virtual machines (VMs) have become increasingly popular over the past few
+decades. In particular, they improve utilization of existing hardware by
+allowing users to run multiple unmodified operating systems on a single machine.
+A key concern when it comes to VMs is isolation. A single machine may be used to
+run multiple VMs created by different users who generally want their data
+to be protected from one another. As a result, hypervisors generally maintain
+some sort of secure boundary between guest VMs. However, another important
+aspect of isolation is protecting guest VMs from the host machine. A hypervisor
+that fully trusts its host machine is vulnerable to malicious actors who
+gain control of the host operating system itself. This is dangerous because
+the host machine could be used to steal confidential corporate data or sensitive
+personal information.
+
+SeKVM is a formally verified hypervisor for ARM that isolates KVM's trusted computing
+base into a small core~\cite{sekvm}. It builds on the previous work of HypSec,
+which is a hypervisor that protects VMs from the host machine~\cite{hypsec}.
+HypSec consists of two layers. The first layer is an untrusted
+\textit{hostvisor}, which operates at EL1 together with the host operating
+system. The hostvisor leverages many of the data structures and functions
+built into the host operating system for VM management. The second layer is a
+trusted \textit{corevisor}, which operates at the more privileged EL2 level.
+This corevisor is responsible for isolating VMs from each other and from the
+host machine. SeKVM builds on HypSec's design, with the main difference being
+that its trusted computing base is formally verified. In SeKVM, the two layers
+are termed \textit{KServ} and \textit{KCore} respectively. However, in this
+paper, we use the terms hostvisor and corevisor to remain
+consistent with the underlying HypSec kernel source code.
+
+SeKVM protects guest VMs in three main areas: CPU, memory, and I/O. In the
+area of memory, SeKVM leverages ARM hardware support for virtualization. ARM
+allows hypervisors to control memory access using stage-2
+translation~\cite{arm}. In particular, the guest operating systems and host
+operating system each think they are using page tables to map a virtual address space to the
+physical address space. However, in reality, they only control the mapping
+of virtual addresses to intermediate physical addresses. When translating
+virtual addresses, the MMU starts by using these page tables to translate
+virtual addresses into intermediate physical addresses. However, it then 
+uses a second set of page tables to translate
+intermediate phyiscal addresses into the actual machine physical addresses.
+This second set of page tables, called stage-2 page tables, are controlled by
+the hypervisor running at EL2. In the context of SeKVM, the stage-2 page tables
+are managed by the corevisor. When the host operating system tries to
+access some physical memory, the corevisor first checks that this
+physical memory does not belong to a guest VM.
+
+The hostvisor cannot be allowed to access the memory used to store
+the stage-2 page tables of guest VMs. Otherwise, it could simply modify these
+stage-2 page tables so that guest VMs write their data to memory that can be
+accessed and manipulated by the hostvisor. In other words, the memory used for
+these stage-2 page tables must `belong' to the corevisor. In SeKVM,
+the corevisor is statically allocated this memory on bootup. This is done by
+a linker script, \textit{arch/arm64/kernel/vmlinux.lds.S}~\cite{vmlinux.lds.S}, which allocates some
+contiguous region of memory for the stage-2 page tables and demarcates it using the labels \textit{stage2\_pgs\_start}
+and \textit{stage2\_pgs\_end}. The size of this memory region is
+determined by the macro \textit{STAGE2\_PAGES\_SIZE}, which is defined in
+\textit{arch/arm64/include/asm/kernel-pgtable.h}~\cite{kernel-pgtable.h}. In
+particular, this memory region is large enough to store the stage-2 page table
+for the corevisor, the stage-2 page table for the hostvisor,
+and the stage-2 page tables for sixteen guest VMs. The corevisor and hostvisor are
+each allocated sixteen 2M pages for their stage-2 page tables, while each guest VM
+is allocated four 2M pages. Altogether, the corevisor is given 96 2M
+pages for all of these stage-2 page tables. During bootup, the hostvisor
+allocates the beginning of this memory region to the corevisor and itself. It then 
+initializes the corevisor's VM-management data structure such that the remainder of this stage-2 page table memory region
+is evenly divided between each of the sixteen possible guest VMs. In particular, the hostvisor sets
+\textit{el2\_data->vm\_info[i].page\_pool\_start =
+pool\_start + (STAGE2\_VM\_POOL\_SIZE * (i - 1))} for each possible VMID~\cite{el1.c}.
+Here, \textit{vm\_info[i].page\_pool\_start} marks the start of the stage-2
+page table for the \textit{i}th VM.
+
+The key observation here is that this partitioning of memory is done statically
+at compile time. In other words, the hostvisor cannot reclaim the memory it has
+allocated to the corevisor. Similarly, the corevisor cannot ask for more memory
+from the hostvisor. This is in contrast to the dynamic partitioning of memory
+between the hostvisor and guest VMs. Guest VMs can request memory from the
+hostvisor via a page fault, and the hostvisor can reclaim memory from guest VMs
+using ballooning~\cite{hypsec}. The static partitioning of memory between the
+hostvisor and the corevisor is undesirable for two reasons:
+
+\begin{itemize}
+    \item First, unused memory cannot be reclaimed from the corevisor. Say
+    the number of VMs being run is $n$, such that $n < 16$. Then there will be
+    $(16 - n) * 4$ 2M pages reserved for the stage-2 page tables of guest VMs that
+    do not exist. Dynamic partitioning of memory would allow this memory to be reclaimed by the hostvisor, to
+    alleviate memory pressure in the host. This memory could also be given to guest VMs, to
+    alleviate memory pressure in these VMs. Giving VMs more memory would improve
+    VM performance, because less data would need to be moved to the swap partition. 
+    \item Second, there is a hard upper limit on the number of VMs that can
+    be supported by SeKVM. Users cannot add VMs above the limit of sixteen,
+    because there will be no memory in the corevisor to support the stage-2
+    page tables of these VMs. Users could always choose to statically allocate
+    even more memory to the corevisor upon bootup, but this would exacerbate
+    the problem of unused memory mentioned above.
+\end{itemize}
+
+Static allocation of memory to the corevisor is not limited to memory for the
+stage-2 page tables of each VM. In addition to this, SeKVM also statically
+allocates memory to the corevisor to store the metadata of each VM. The same linker script
+mentioned above reserves another contiguous region of memory equal in size to 32
+2M pages, and demarcates it using \textit{el2\_data\_start}
+and \textit{el2\_data\_end}~\cite{vmlinux.lds.S}. This memory is given to the
+corevisor on bootup. Part of this memory is used to
+store an array of \textit{struct el2\_vm\_info} objects, where each object is
+used to store the metadata of each guest VM. SeKVM could potentially also benefit
+from dynamic allocation of the memory used to store this VM metadata, where
+this memory is only given to the corevisor upon VM creation and returned to the
+hostvisor upon VM deletion. However,
+we chose not to focus on this because the size of each \textit{struct el2\_vm\_info} object
+is 768 bytes. The total size of all of the \textit{struct el2\_vm\_info} objects
+is 12288 bytes, which is less than four 4K pages in total. As a result, the
+problem of unused memory is not as significant, since we waste at most four
+4K pages of memory. In any case, memory can only be allocated at the
+page granularity. Hence, in the case where we want to create a new VM and there is no 
+more space in the existing dynamically-allocated memory for the new \textit{struct el2\_vm\_info} object, we would
+inevitably end up allocating an entirely new 4K page, the majority of which would remain unused. (This
+is not the case with VM stage-2 page tables, since the size of the stage-2 page
+table for each VM is nicely page-aligned.) The problem of a hard upper limit
+is also not as significant, since we could easily make the array larger without
+incurring much memory overhead.
 
 %-------------------------------------------------------------------------------
-\section{Introduction}
+\section{Design}
 %-------------------------------------------------------------------------------
 
-TODO~\cite{sekvm, hypsec}
+TODO
+
+%-------------------------------------------------------------------------------
+\section{Implementation}
+%-------------------------------------------------------------------------------
+
+TODO
+
+%-------------------------------------------------------------------------------
+\section{Evaluation}
+%-------------------------------------------------------------------------------
+
+TODO
+
+%-------------------------------------------------------------------------------
+\section{Future Work}
+%-------------------------------------------------------------------------------
+
+TODO
+
+%-------------------------------------------------------------------------------
+\section{Conclusions}
+%-------------------------------------------------------------------------------
+
+TODO
 
 %-------------------------------------------------------------------------------
 % \section{Footnotes, Verbatim, and Citations}

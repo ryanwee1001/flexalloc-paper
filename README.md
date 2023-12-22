@@ -13,6 +13,8 @@ bibtex paper
 pdflatex paper      # Compile with paper.bib
 ```
 
+You may have to run this set of commands twice when adding new references.
+
 ## Dependencies
 
 You will probably need to use a package manager to manage the `TeX` dependencies. We used `tlmgr`, which worked pretty well for us.
