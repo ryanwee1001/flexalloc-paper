@@ -40,11 +40,11 @@
 %     this file to be compiled. (And changing refs style to 'plain'.)
 %
 %   * Make template self-contained in terms of figures, to
-%     allow this file to be compiled. 
+%     allow this file to be compiled.
 %
 %   * Added packages for hyperref, embedding fonts, and improving
 %     appearance.
-%   
+%
 %   * Removed outdated text.
 %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -107,7 +107,7 @@
     author =        {XuhengLi (GitHub username)},
     title =         {el1.c in osdi23-paper114-sekvm},
     howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/hypsec_proved/el1.c}},
-    note =          {Accessed: 2023-12-21}       
+    note =          {Accessed: 2023-12-21}
 }
 @Misc{kerneldocs,
     author =        {kernel.org},
@@ -131,13 +131,13 @@
     author =        {XuhengLi (GitHub username)},
     title =         {el2.c in osdi23-paper114-sekvm},
     howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/hypsec_proved/el2.c}},
-    note =          {Accessed: 2023-12-22}       
+    note =          {Accessed: 2023-12-22}
 }
 @Misc{hypsec_host.h,
     author =        {XuhengLi (GitHub username)},
     title =         {hypsec\_host.h in osdi23-paper114-sekvm},
     howpublished =  {\url{https://github.com/columbia/osdi23-paper114-sekvm/blob/ae/arch/arm64/include/asm/hypsec_host.h}},
-    note =          {Accessed: 2023-12-22}       
+    note =          {Accessed: 2023-12-22}
 }
 \end{filecontents}
 
@@ -231,7 +231,7 @@ operating system each think they are using page tables to map a virtual address 
 physical address space. However, in reality, they only control the mapping
 of virtual addresses to intermediate physical addresses. When translating
 virtual addresses, the MMU starts by using these page tables to translate
-virtual addresses into intermediate physical addresses. However, it then 
+virtual addresses into intermediate physical addresses. However, it then
 uses a second set of page tables to translate
 intermediate phyiscal addresses into the actual machine physical addresses.
 This second set of page tables, called stage-2 page tables, are controlled by
@@ -256,7 +256,7 @@ and the stage-2 page tables for sixteen guest VMs. The corevisor and hostvisor a
 each allocated sixteen 2M pages for their stage-2 page tables, while each guest VM
 is allocated four 2M pages. Altogether, the corevisor is given 96 2M
 pages for all of these stage-2 page tables. During bootup, the hostvisor
-allocates the beginning of this memory region to the corevisor and itself. It then 
+allocates the beginning of this memory region to the corevisor and itself. It then
 initializes the corevisor's VM-management data structure such that the remainder of this stage-2 page table memory region
 is evenly divided between each of the sixteen possible guest VMs. In particular, the hostvisor sets
 \textit{el2\_data->vm\_info[i].page\_pool\_start =
@@ -280,7 +280,7 @@ hostvisor and the corevisor is undesirable for two reasons:
     do not exist. Dynamic partitioning of memory would allow this memory to be reclaimed by the hostvisor, to
     alleviate memory pressure in the host. This memory could also be given to guest VMs, to
     alleviate memory pressure in these VMs. Giving VMs more memory would improve
-    VM performance, because less data would need to be moved to the swap partition. 
+    VM performance, because less data would need to be moved to the swap partition.
     \item Second, there is a hard upper limit on the number of VMs that can
     be supported by SeKVM. Users cannot add VMs above the limit of sixteen,
     because there will be no memory in the corevisor to support the stage-2
@@ -352,11 +352,54 @@ but each region is distinct and need not be allocated contiguously with the
 other 1M regions. As a result, the hostvisor can easily use \textit{alloc\_pages}
 to allocate the memory needed for a guest VM's stage-2 page tables.
 
-We implement this fragmentation by manipulating the iterators used to traverse
-the guest VM's stage-2 page table. In particular, the VM's stage-2 page table
-is a four-level page table, comprising a page global directory (PGD), a
-page upper directory (PUD), a page middle directory (PMD), and multiple page table
-entries (PTEs). TODO (Matthew - Page table fragmentation)
+We implement this fragmentation by manipulating the iterators that provide the next useable
+page at a given level when traversing the stage-2 page table for the purpose of recording
+an additional entry. In the HypSec implementation, each stage-2 page level's pages are
+kept contiguous to one another and never intermixed with pages from other levels.
+Each iterator starts at a particular offset into the VM's statically allocated stage-2
+page table region, and increments each time a new page is consumed during a traversal
+for use at that level. The design of these iterators means that they are limited to
+only operating within a large, contiguous region.
+
+The HypSec page global directory (PGD), page upper directory (PUD), and page middle directory
+(PMD) iterators operate within a single contiguous 8MB region divided into varying sized
+sub-regions for each level. The PGD iterator operates over a 16 * PAGE_SIZE region, the PUD
+iterator over a SZ_2M - (16 * PAGE_SIZE) region, and the PMD iterator over a 3 * SZ_2M region.
+Our implementation eliminates the need for all of these subregions to be contiguous to
+one another and enables fragmentation within each subregion itself.
+
+The FlexAlloc iterators, which can be thought of as page allocators specific to VM stage-2
+page tables, operate over a pool of eight, non-contiguous 1MB regions. The FlexAlloc iterators
+first exhaust all pages from a given 1MB region. Once the current region is exhausted, FlexAlloc
+will jump the iterators to the next region in the pool. Subsequent traversals of the
+stage-2 page tables with the alloc flag enabled will pull pages from the seperate,
+non-contiguous region. By removing the requirement for contiguous 8MB regions, FlexAlloc
+enables reliable dynamic allocation of stage-2 page table regions.
+
+We implemented two versions of the FlexAlloc iterators. In the first version, we used a single,
+generalized iterator shared across all levels of the stage-2 page tables. In the HypSec implementation,
+the iterators are structured such that a PUD page will never be sandwiches between two PMD pages.
+The first version of the FlexAlloc iterators ignores this semantic and instead is non-discrimiant
+in regards to the particular level a page will be used in. We decided to stop development of this
+version before it was fully functional in favor of version two which more closely resembles recent changes made to SeKVM's
+stage-2 page table allocation scheme.
+
+In the second version, we opt to enforce the semantic that pages at each specific level are
+allocated from seperate pools and thus never mixed with one another. To accomplish this while still maintaining the same pool of non-contiguous 1MB regions,
+we split the single, general iterator into nine distinct iterators. One iterator is used
+for PUD pages, two iterators are used for PMD pages, and six iterators are used for PTE pages.
+The number of iterators assigned to each level is based on the potential maximum number of
+pages that could be consumed at that level along with how many distinct 1MB regions each level
+can be allocated from. When a page is allocated at a particular level, the correct iterator is chosen based on
+it's assigned level and whether or not its preceeding iterators have been exhausted.
+
+The naming semantics of the iterators at each level can be confusing so we feel it is worth
+clarifying here. The PGD iterator allocates pages to use as entries inside of a PGD page. This
+implies that the PGD iterator, as an example, actually allocates pages that are used in the
+subsequent level, which in this case is PUD. All iterators follow the pattern of allocating
+pages for a given level to point to which are implicitly actually pages in the next level
+of the stage-2 page tables.
+
 
 \subsection{Allocating memory to the corevisor}
 
@@ -369,7 +412,7 @@ before calling \textit{HVC\_REGISTER\_KVM}. However, we ultimately choose to
 discard this alternative design because it leads to a more complicated
 implementation. In particular, the corevisor would have to verify a one-to-one
 correspondence between calls to \textit{HVC\_PASS\_MEM} and \textit{HVC\_REGISTER\_KVM}.
-It would also have to handle malicious hostvisors that try to call 
+It would also have to handle malicious hostvisors that try to call
 \textit{HVC\_REGISTER\_KVM} without calling \textit{HVC\_PASS\_MEM}. Morevoer,
 adding an extra hypercall increases latency because it leads to more frequent
 world-switches between the hostvisor running in EL1 and the corevisor running in EL2.
@@ -387,9 +430,9 @@ we do the following:
 for (i = 0; i < 8; ++i) {
     addr = page_starts[i];
     end = page_starts[i] + SZ_1M;
-    
+
     /* ... */
-    
+
     if (addr == 0) {
         // Hostvisor's alloc_pages() failed.
         __hyp_panic();
@@ -446,7 +489,7 @@ particular, we run VMWare Fusion Professional Version 13.0.2 on an M1 Macbook
 Air running MacOS Ventura 13.6. Using VMWare, we create a VM
 with 2 processor cores and 8704 MB memory running Ubuntu 22.04.3 LTS. On this
 VM, we run QEMU 6.2.0 to emulate a Raspberry Pi 4. This emulated Raspberry
-Pi 4 serves as our host machine, on which we run FlexAlloc. Our guest VMs 
+Pi 4 serves as our host machine, on which we run FlexAlloc. Our guest VMs
 run vanilla Linux v5.4.
 
 Using FlexAlloc, we boot up a guest VM and verify that it is able to start up
@@ -487,7 +530,7 @@ a fixed-size array of \textit{struct el2\_vm\_info} objects in corevisor
 memory ~\cite{hypsec_host.h}. This essentially preserves the hard cap on the
 number of guest VMs that can be run. An easy fix would be to keep this array
 as a statically-allocated array, while increasing the number of elements. Since each
-\textit{struct el2\_vm\_info} object is only 768 bytes, this would not waste a 
+\textit{struct el2\_vm\_info} object is only 768 bytes, this would not waste a
 significant amount of memory even if fewer than sixteen VMs are created.
 
 \subsection{Shortcomings in evaluation}
@@ -519,7 +562,12 @@ to allocate contiguous regions larger than 4M. It might be possile to avoid this
 by looking at other Linux memory allocators explicitly designed for the purpose
 of large contiguous allocations.
 
-TODO (Matthew - DPM)
+To enable dynamic allocation of EL2 memory in general and beyond just the scope of just
+the stage-2 page tables, we proposed and designed, but did not complete the implementation for,
+a dynamic page manager (DPM) interface. DPM would enable other "services" within EL2 to
+utilize dynamic allocation for their memory regions without needing to handle the process
+of receiving memory from the host.
+
 
 %-------------------------------------------------------------------------------
 \section{Conclusions}
@@ -605,7 +653,7 @@ Systems II at Columbia University.
 % free:
 
 % \begin{description}
-  
+
 % \item[fread] a function that reads from a \texttt{stream} into the
 %   array \texttt{ptr} at most \texttt{nobj} objects of size
 %   \texttt{size}, returning returns the number of objects read.
