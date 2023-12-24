@@ -590,12 +590,12 @@ region reclaimed during VM shutdown, and verify that they match each other.
 
 In order to make sure that the host can reasonably be expected to find 8x 1MB
 contiguous regions when booting a VM, we evaluated how many successful
-alloc_pages(1MB) calls could be made before failure. To reproduce our tests,
+alloc\_pages(1MB) calls could be made before failure. To reproduce our tests,
 simply compile host-sekvm-project with the \textit{ALLOC\_STRESS\_TEST} macro defined.
 Across our three trails, after booting host SeKVM with the FlexAlloc extension,
 we were able to achieve between 7049 and 7054 successful 1MB allocations
-from alloc_pages(1MB) calls. Since each VM only needs 8 successful allocations,
-we believe that the upperbound on the number of VM's due to potential alloc_pages(1MB)
+from alloc\_pages(1MB) calls. Since each VM only needs 8 successful allocations,
+we believe that the upperbound on the number of VM's due to potential alloc\_pages(1MB)
 failures is sufficiently high.
 
 We verified the changes in corevisor's memory footprint by checking the number of
@@ -605,7 +605,7 @@ FlexAlloc extension, we observed that the Corevisor owned 65549 pages before boo
 while running a VM, and after destroying a VM. On a host running SeKVM with the FlexAlloc
 extension, we observed that the Corevisor owned 32768 pages before VM boot, 34817 pages
 during the life of the VM, and 32768 pages after destroying the VM. Note that FlexAlloc also
-reduces the static stage2_region size in the linker script to zero as it is no longer needed.
+reduces the static stage2\_region size in the linker script to zero as it is no longer needed.
 These findings show that FlexAlloc is able to successfully receive, use, and handback pages
 given by the host for usage exclusively as VM stage-2 page tables.
 
