@@ -461,7 +461,8 @@ static u64 inline get_pmd_next(u32 vmid) {
     // Make sure we have not exhausted all pages
     // across all regions
     if (used_pages == PTE_ITER_MAX_PAGES &&
-        pool_index == PTE_USED_ITER_COUNT - 1) {
+        pool_index == PTE_USED_ITER_COUNT - 1)
+        {
         __hyp_panic();
     }
 
@@ -563,12 +564,12 @@ on each of the eight 1M regions.
 %-------------------------------------------------------------------------------
 
 We evaluate FlexAlloc by running it on a QEMU-emulated Raspberry Pi 4. In
-particular, we run VMWare Fusion Professional Version 13.0.2 on an M1 Macbook
-Air running MacOS Ventura 13.6. Using VMWare, we create a VM
-with 2 processor cores and 8704 MB memory running Ubuntu 22.04.3 LTS. On this
+particular, we run VMWare Fusion Professional Version 13.0.0 on a 2018 x86-64 Macbook
+Pro running MacOS Ventura 13.6.1. Using VMWare, we create a VM
+with 4 processor cores and 12 GB memory running Ubuntu 22.04.3 LTS. On this
 VM, we run QEMU 6.2.0 to emulate a Raspberry Pi 4. This emulated Raspberry
-Pi 4 serves as our host machine, on which we run FlexAlloc. Our guest VMs
-run vanilla Linux v5.4.
+Pi 4 serves as our host machine, on which we run an SeKVM with the FlexAlloc
+extension. Our guest VMs run vanilla Linux v5.4.
 
 Using FlexAlloc, we boot up a guest VM and verify that it is able to start up
 without any kernel panics. We use \textit{print\_string} to verify that we
@@ -579,6 +580,27 @@ table that is non-contiguous. We also shut down the guest VM and verify that
 all eight 1M regions are returned to the hostvisor. We compare the base address
 of each region allocated during VM creation against the base address of each
 region reclaimed during VM shutdown, and verify that they match each other.
+
+In order to make sure that the host can reasonably be expected to find 8x 1MB
+contiguous regions when booting a VM, we evaluated how many successful
+alloc_pages(1MB) calls could be made before failure. To reproduce our tests,
+simply compile host-sekvm-project with the \textit{ALLOC\_STRESS\_TEST} macro defined.
+Across our three trails, after booting host SeKVM with the FlexAlloc extension,
+we were able to achieve between 7049 and 7054 successful 1MB allocations
+from alloc_pages(1MB) calls. Since each VM only needs 8 successful allocations,
+we believe that the upperbound on the number of VM's due to potential alloc_pages(1MB)
+failures is sufficiently high.
+
+We verified the changes in corevisor's memory footprint by checking the number of
+pages owned by the corevisor according to the \textit{el2\_data\-\>s2\_pages} array at key points
+throughout the VM boot and destruction processes. On a host running SeKVM without the
+FlexAlloc extension, we observed that the Corevisor owned 65549 pages before booting a VM,
+while running a VM, and after destroying a VM. On a host running SeKVM with the FlexAlloc
+extension, we observed that the Corevisor owned 32768 pages before VM boot, 34817 pages
+during the life of the VM, and 32768 pages after destroying the VM. Note that FlexAlloc also
+reduces the static stage2_region size in the linker script to zero as it is no longer needed.
+These findings show that FlexAlloc is able to successfully receive, use, and handback pages
+given by the host for usage exclusively as VM stage-2 page tables.
 
 %-------------------------------------------------------------------------------
 \section{Shortcomings and Future Work}
@@ -594,10 +616,18 @@ the host machine. For instance, the current implementation of FlexAlloc
 does not use \textit{memset} to zero out the memory given to it by the hostvisor
 for the VM's stage-2 page table. This presents a danger if the MMU tries to
 read from a page table entry that should not actually exist, but that has
-previously been written into the memory region by the hostvisor. Another flaw is that
+previously been written into the memory region by the hostvisor. We also occasionally
+observed stalls when booting subsequent VMs after shutting down other VMs that we
+believe were caused by failing to \textit{memset} the pages to zero. For example, the second
+VM to boot after booting and shutting down the first VM can receive pages with non-zero data
+that, when interpretted as page table entries, lead to undefined behavior.
+
+Another flaw is that
 FlexAlloc does not verify that the eight 1M regions are actually distinct and
 do not overlap with one another. Hence, FlexAlloc still fundamentally relies on
 a non-malicious hostvisor, and would require further patches to be fully secure.
+To fix this, FlexAlloc can simply have an added check that verifies all of the
+physical addresses received from the host are unique, 1MB aligned, and non-overlapping.
 
 Another key shortcoming of our design is that it does not fully implement
 dynamic memory partitioning between the corevisor and hostvisor. As mentioned in
