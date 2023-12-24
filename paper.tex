@@ -322,7 +322,7 @@ we designed and partially implemented a fully generalized dynamic allocation int
 could be used to support dynamic allocation for all metadata structs which we call the
 Dynamic Page Manager (DPM). DPM handles all of the work required to receive and return
 memory from the hostvisor allowing other "services" in EL2 to exchange memory with DPM using
-a very similiar interface to the alloc_pages and free_pages interface available in EL1. We describe
+a very similiar interface to the \textit{alloc\_pages} and \textit{free\_pages} interface available in EL1. We describe
 this interface in detail in Section 4.
 
 %-------------------------------------------------------------------------------
@@ -583,16 +583,16 @@ region reclaimed during VM shutdown, and verify that they match each other.
 
 In order to make sure that the host can reasonably be expected to find 8x 1MB
 contiguous regions when booting a VM, we evaluated how many successful
-alloc_pages(1MB) calls could be made before failure. To reproduce our tests,
+\textit{alloc\_pages(1MB)} calls could be made before failure. To reproduce our tests,
 simply compile host-sekvm-project with the \textit{ALLOC\_STRESS\_TEST} macro defined.
 Across our three trails, after booting host SeKVM with the FlexAlloc extension,
 we were able to achieve between 7049 and 7054 successful 1MB allocations
-from alloc_pages(1MB) calls. Since each VM only needs 8 successful allocations,
-we believe that the upperbound on the number of VM's due to potential alloc_pages(1MB)
+from \textit{alloc\_pages(1MB)} calls. Since each VM only needs 8 successful allocations,
+we believe that the upperbound on the number of VM's due to potential \textit{alloc\_pages(1MB)}
 failures is sufficiently high.
 
 We verified the changes in corevisor's memory footprint by checking the number of
-pages owned by the corevisor according to the \textit{el2\_data\-\>s2\_pages} array at key points
+pages owned by the corevisor according to the \textit{s2\_pages} array in \textit{el2\_data} at key points
 throughout the VM boot and destruction processes. On a host running SeKVM without the
 FlexAlloc extension, we observed that the Corevisor owned 65549 pages before booting a VM,
 while running a VM, and after destroying a VM. On a host running SeKVM with the FlexAlloc
