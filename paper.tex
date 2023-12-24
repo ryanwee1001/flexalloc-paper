@@ -322,7 +322,7 @@ Although the \textit{struct el2\_vm\_info} objects have a much smaller memory fo
 we designed and partially implemented a fully-generalized dynamic allocation interface that
 could be used to support dynamic allocation for all metadata structs. We call this the
 Dynamic Page Manager (DPM). DPM handles all of the work required to receive memory from and return
-memory to the hostvisor, allowing other ``services'' in EL2 to exchange memory with the DPM using
+memory to the hostvisor, allowing other ``services'' in EL2 to exchange memory with DPM using
 a very similiar interface to the \textit{alloc\_pages} and \textit{free\_pages} interface available in EL1. We describe
 this interface in detail in Section 4. However, the next section focuses
 exclusively on the changes made to support dynamic allocation of the memory
@@ -627,8 +627,6 @@ since it now only needs to contain the stage-2 page tables of the hostvisor and 
 These findings show that the corevisor in FlexAlloc is able to successfully receive, use, and return pages
 given to it by the hostvisor for constructing a VM's stage-2 page table.
 
-% 
-
 %-------------------------------------------------------------------------------
 \section{Shortcomings and Future Work}
 %-------------------------------------------------------------------------------
@@ -644,20 +642,21 @@ does not use \textit{memset} to zero out the memory given to it by the hostvisor
 for the VM's stage-2 page table. This presents a danger if the MMU tries to
 read from a page table entry that should not actually exist, but that has
 previously been written into the memory region by the hostvisor. We also occasionally
-observed stalls when booting subsequent VMs after shutting down other VMs that we
-believe were caused by failing to \textit{memset} the pages to zero. For example, the second
-VM to boot after booting and shutting down the first VM can receive pages with non-zero data
-that, when interpretted as page table entries, lead to undefined behavior.
+observed stalls when shutting down VMs and booting new ones, which we
+believe is caused by our failure to \textit{memset} the pages to zero. For example,
+if we shut down a VM and boot up a new one, the second VM's stage-2 page table could contain pages previously
+used by the first VM's stage-2 page table. These pages could contain non-zero data,
+leading to undefined behavior when interpreted as page table entries.
 
 Another flaw is that
 FlexAlloc does not verify that the eight 1M regions are actually distinct and
 do not overlap with one another. Hence, FlexAlloc still fundamentally relies on
 a non-malicious hostvisor, and would require further patches to be fully secure.
-To fix this, FlexAlloc can simply have an added check that verifies all of the
-physical addresses received from the host are unique, 1MB aligned, and non-overlapping.
+To fix this, FlexAlloc could simply have an additional check verifying that all of the
+physical addresses received from the host are unique, 1M-aligned, and non-overlapping.
 
-Another key shortcoming of our design is that it does not fully implement
-dynamic memory partitioning between the corevisor and hostvisor outside of stage-2 page tables for VMs. As mentioned in
+Finally, our design does not fully implement
+dynamic memory partitioning between the corevisor and hostvisor, outside of VM stage-2 page tables. As mentioned in
 the introduction, another area in which corevisor memory scales with the number
 of VMs is in maintaining \textit{struct el2\_vm\_info} objects that record the
 metadata associated with each guest VM. Currently, we still statically allocate
@@ -666,30 +665,22 @@ memory ~\cite{hypsec_host.h}. This essentially preserves the hard cap on the
 number of guest VMs that can be run. An easy fix would be to keep this array
 as a statically-allocated array, while increasing the number of elements. Since each
 \textit{struct el2\_vm\_info} object is only 768 bytes, this would not waste a
-significant amount of memory even if fewer than sixteen VMs are created. Regarding the
-\textit{shared\_data\_region}, since each VM requires a \textit{struct kvm}, the size of
-this region would either need to be dynamically allocated or the static size would
-need to be increases in order to lift the 16 VM cap present in SeKVM. However, since the static region
-size has been decreased by 128 MB within FlexAlloc and the size of \textit{struct kvm}'s is relatively
-small, inflating this region to accomodate 32+ VMs would still result in substantial memory savings
-thanks to FlexAlloc's changes. In the Future Work section, we propose a potential solution to
-the issue of bringing dynamic allocation to EL2 metadata structures that are not page aligned
-which we call DPM.
-
+significant amount of memory even if fewer than sixteen VMs are created. Moreover,
+each VM also requires a \textit{struct kvm}. Hence, to lift the sixteen-VM cap present
+in SeKVM, we would need to either dynamically allocate the memory for this struct,
+or increase the size of the statically-allocated region for VM metadata.
+The latter approach is probably reasonable.
+Since the changes to the VM stage-2 page tables already decrease the size
+of the statically-allocated region by 128 MB, re-inflating this region to accomodate 32+ VMs would still result in substantial memory savings. 
+The former approach is possible as well. In the subsection on Future Work, we propose DPM as a potential solution to
+the issue of bringing dynamic allocation to EL2 metadata structures that are not page-aligned.
 
 \subsection{Shortcomings in evaluation}
 
 We also do not fully evaluate our implementation. For one, we do not stress-test our implementation by running a large number
-of VMs. To do this, we would have to modify the macros used to define the current
-sixteen-VM limit. It is entirely conceivable that the hostvisor might not be able
-to allocate 1M contiguous regions of memory past a certain point if memory
-pressure and external fragmentation are high. In this case, the hostvisor would
-not be able to allocate the memory regions needed for the corevisor to create
-the stage-2 page table for a new VM. We could perhaps delay this limit by breaking
-the VM stage-2 page tables down into even smaller regions of memory. In addition, we do not verify whether fragmenting the stage-2 page table results
-in any degradation in VM performance. Given the less-than-ideal test environment
-we have at our disposal, we did not investigate performance metrics related to execution time
-for our implementation and only considered memory footprint metrics. Ideally, we would run a memory-intensive
+of VMs. In addition, we do not verify whether fragmenting the stage-2 page table results
+in any degradation in VM performance. Given the limitations of our test environment, we
+only considered metrics related to the corevisor's memory footprint, and did not investigate performance metrics related to execution time. Ideally, we would run a memory-intensive
 benchmark on our guest VMs to verify that our iterators work properly under a
 high memory load across multiple VMs.
 
@@ -703,7 +694,9 @@ that the size of our regions would not impeed the host's ability to launch VMs. 
 by looking at other Linux memory allocators explicitly designed for the purpose
 of large contiguous allocations and adding such an allocator to the host.
 
-\subsection{Dynamic Page Manager - Overview}
+\subsection{Dynamic Page Manager}
+
+\subsubsection{Overview}
 To enable dynamic allocation of EL2 memory in general beyond just the scope of
 a VM's stage-2 page tables, we also designed but did not fully implement
 a dynamic page manager (DPM). DPM is a system that exposes an interface for other ``services'' within EL2 to
@@ -711,82 +704,95 @@ utilize dynamic allocation for their memory regions, while hiding the implementa
 and returning memory to the host. This would be another interesting area of future work. Please
 see the \textit{dpm} branch of the linked repository for a partial DPM implementation.
 
-By implementing a means by which EL2 can dynamically “request” and “hand back” contiguous
-regions of pages from EL1 arbitrarily, EL2 would no longer be limited to using statically allocated, fixed size regions.
-We propose the following Dynamic Page Manager (DPM) interface for EL1 and EL2 to interact over
-when dynamically allocating memory for EL2 to use arbitrarily.
-
-Other services within EL2 can use DPM to dynamically request contiguous regions of pages.
-These services will be responsible for managing the memory contents of these pages once DPM
-allocates the region to that specific service. The service will be required to signal DPM
-when that contiguous region is no longer in use which is similar to the kmalloc and kfree model.
+By implementing an interface for EL2 to dynamically ``request'' and ``return'' arbitrary
+regions of contiguous memory from EL1, the corevisor would no longer be limited to using statically-allocated, fixed-size regions.
+Instead, other services within EL2 could use DPM to dynamically request regions of contiguous memory.
+These services would be responsible for managing the contents of these pages once DPM
+allocates these pages to that specific service. The service would be required to signal DPM
+when that contiguous region is no longer in use, using an interface that is similar to the kmalloc and kfree model.
 
 DPM operates at the contiguous region granularity rather than the page granularity because
 a lot of the existing SeKVM code assumes contiguous regions. If DPM were to instead piece
 together pages to form fragmented regions, all of this other code would break. Thus DPM
-can actually be thought of as a region manager rather than a page manager. DPM is structured
+can actually be thought of as a memory-region manager rather than a page manager. DPM is structured
 in such a way that a second page-granularity version of DPM could operate alongside the
-region-granularity version of DPM thus allowing some services to remaining dependent on
-contiguous regions while others adapt to use separated regions in support of better memory
+region-granularity version of DPM, thus allowing some services to remain dependent on
+contiguous regions while others adapt to use separated non-contiguous regions, in order to achieve better memory
 utilization by EL2.
 
-\subsection{Dynamic Page Manager - Interface}
-Additional hypercalls accessible by EL1 host to DPM:
+\subsubsection{Interface}
+Our design of DPM exposes the following additional hypercalls to the
+hostvisor running at EL1:
 
 \begin{itemize}
-\item Giving allocated pages from EL1 to EL2:
-\textit{hvc\_give\_pages(starting\_phys\_addr, page\_aligned region)}
-\item Reclaim unused pages from EL2 back to EL1:
-\textit{hvc\_reclaim\_pages(output\_struct\_array\_page\_starting\_phys\_addr)}
-All regions being handed back to the host are recorded in the return page which is
-passed by the host. Every physical address that EL2 records in this page is considered
+\item Allocating pages to EL2:\\
+\textit{hvc\_give\_pages(base\_phys\_addr\_of\_region, size\_of\_region)}.
+Note that the size must be page-aligned.
+\item Reclaiming pages from EL2:\\
+\textit{hvc\_reclaim\_pages(base\_phys\_addr\_of\_output\_struct)}.
+The output struct is provided by the hostvisor, and should contain an array of
+physical addresses. Services at EL2 should record the physical addresses
+of  regions being handed back to the hostvisor in the output
+struct. The hostvisor can then read from the output struct and free the relevant pages.
+Every physical address that EL2 records in this output struct is considered
 freed and no longer managed by DPM.
 \end{itemize}
 
-DPM Interface for usage internally by EL2 services:
+\noindent Our design of DPM also exposes the following interface to services running
+at EL2 that want dynamically-allocated memory:
 \begin{itemize}
-\item Requesting a contiguous region of a given size from the pool:
-\textit{dpm\_alloc\_region(region size)}:
+\item Requesting a contiguous region of a given size from the DPM pool:
+\textit{dpm\_alloc\_region(size)}.
 	Returns an address to the region if one was available in the pool,
-    and 0 to indicate error which the requesting service must propagate back to EL1
+    and 0 to indicate an error which the requesting service must propagate back to EL1.
 \item
 \textit{dpm\_free\_region(starting\_region\_addr, optional: size)}:
-Returns a previously allocated region back to the pool from the EL2 service that used it
+Signals that a previously-allocated region can be returned to the DPM pool.
 \end{itemize}
 
-\subsection{Dynamic Page Manager - Metadata}
+\subsubsection{Metadata}
+
+DPM manages regions of pages using a circular linked list (Figure \ref{fig:dpmmetadata}). When an EL2 service requests
+a region of a specific size from DPM, DPM will search this list for an available match.
+If no matches are found, DPM returns an error indicating to the EL2 service that it must
+propogate the error back to the host. Upon receiving the error, the host will make an
+additional hypercall that passes a new region of some size to DPM. After restarting the original
+hypercall, DPM will successfully find a region to hand to the EL2 service. The code
+below illustrates the data structures used to store this metadata.
+
 \begin{verbatim}
 // DPM Overall Metadata
-struct dpm { // contained in struct el2_data
-    u64 base_page_addr; // Address to the first
-                        // dpm_region page
-    u64 region_count;   // number of regions currently
-                        // in the pool
-    u64 page_count;     // number of pages currently
-                        // in the pool
+// Contained in struct el2_data
+struct dpm {
+    // Address to the first
+    // dpm_region page
+    u64 base_page_addr; 
+
+    // Number of regions currently in pool
+    u64 region_count;
+
+    // Number of pages currently in pool
+    u64 page_count;     
 };
 
-// DPM Region-specific Metadata
+// DPM Region-Specific Metadata
 struct dpm_region {
-    u64 start_addr; // addr to beginning of first
-                    // page in the region
-    u64 page_count; // number of pages in the region
+    // Addr of the beginning of the first
+    // page in the region
+    u64 start_addr;
 
-    u8 flags; // DXXX XXXA, where A is allocated flag,
-              // D is DPM flag meaning that region
-              // holds DPM metadata, X is available bit
+    // Number of pages in region
+    u64 page_count;
+
+    // DXXX XXXA, where A is allocated flag,
+    // D is DPM flag meaning that region
+    // holds DPM metadata, X is available bit
+    u8 flags; 
 
     struct dpm_region* prev;
     struct dpm_region* next;
 };
 \end{verbatim}
-
-DPM manages regions of pages in form of a circular linked list. When an EL2 service requests
-a region of a specific size from DPM, DPM will search this list for an available match.
-If no matches are found, DPM returns an error indicating to the EL2 service that it must
-propogate the error back to the host. Upon receiving the error, the host will make an
-additional hypercall that passes a new region of some size to DPM. After restarting the original
-hypercall, DPM will successfully find a region to hand to the EL2 service.
 
 \begin{figure}[h!tbp]
 \centering
@@ -797,36 +803,38 @@ hypercall, DPM will successfully find a region to hand to the EL2 service.
 \end{figure}
 
 If the host is under a lot of memory pressure, the host can request that DPM give control
-of available regions back to the host. The host passes a page that DPM will populate with
+of available regions back to the host. The host does so by invoking a hypercall that passes a page $P$, which DPM will populate with
 an array of metadata pertaining to regions that it is handing back. DPM will first unmap this
-page from the host. DPM will then search through the list for all available regions and add them
-to the page. DPM will finally remap the return page to the host and return. The host can then
-call \textit{free\_pages} on all of the return regions.
+page $P$ from the host. DPM will then search through the list mentioned above for all available regions and add them
+to $P$. Finally, DPM will remap $P$ to the host and return. The host can then
+call \textit{free\_pages} on all of the regions listed in $P$.
 
-In order for DPM to receive pages that it needs for it's own metadata, if the host receives an
-error when trying to hand a region of some size to DPM, then the host will know that it needs
-to pass a region of size \textit{PAGE\_SIZE} first to DPM in a seperate hypercall and then retry the
-original region pass hypercall before finally retrying the original hypercall pertaining
-to some other EL2 service. When DPM receives a region and notices that it is out of metadata
-space, DPM will search for a region of \textit{PAGE\_SIZE} to claim for itself before processing
+It is important to ensure that DPM can receive the pages that it needs for its own metadata.
+If the host receives an error when trying to hand a region of some size to DPM, the host will know that it needs
+to first pass a region of size \textit{PAGE\_SIZE} to DPM in a seperate hypercall, and then retry the
+original region pass hypercall, before finally retrying the original hypercall pertaining
+to some other EL2 service. 
+When DPM receives a region and notices that it is out of metadata
+space, it will search for a region of \textit{PAGE\_SIZE} to claim for itself before processing
 the larger region. If one is found, then DPM will claim it and process the region hand off
-as normal.
+as normal. 
 
-\subsection{Dynamic Page Manager - Considerations and Drawbacks}
-DPM allows for arbitrary request of regions from EL2 which is valuable when we may or may not
-need additional pages. If we know some hypercall will require EL2 to receive more pages,
+\subsubsection{Considerations and Drawbacks}
+DPM allows services within EL2 to request arbitrary regions of contiguous memory
+at arbitrary points in time. This is valuable when we may or may not need additional pages.
+If we know some hypercall will definitely require EL2 to receive more pages,
 the error-check-retry pathway may be an unnecessary cost. For example, when we want to
-boot a new VM, we know EL2 will need a stage 2 region for the VM. However, since DPM allows
-regions to be reused after they are made available again, a new VM launch can reuse the
-region from a previously shutdown VM. DPM is designed make it convenient to program against,
-but it’s generalized strategy can lead to extra, avoidable work. We designed DPM with
-programmability in mind over efficiency in hopes that it would make full dynamic allocation
-attainable for SeKVM services by avoiding excessively customized hand offs between the host
-and corevisor. Although we only partially implemented DPM, it would be interesting to
+boot a new VM, we know EL2 will definitely need a memory region for the stage-2 page table of the VM.
+However, since regions returned to DPM can be re-allocated to other EL2 services as long
+as memory is not reclaimed by the host, a new VM could potentially reuse the
+region returned by a previously-shutdown VM. DPM is designed to be convenient to use,
+but its generalized strategy can lead to extra, avoidable work. We design DPM with
+programmability in mind over efficiency, in hopes that it would make full dynamic allocation
+attainable for SeKVM services by avoiding excessively-customized handoffs between the host
+and corevisor. Although we only partially implement DPM, it would be interesting to
 compare the real-world performance metrics between our current stage-2 dynamic allocation
-strategy and a stage-2 dynamic allocation strategy built on top of DPM and a
+strategy, and a stage-2 dynamic allocation strategy built on top of DPM and a
 check-error-retry methodology.
-
 
 %-------------------------------------------------------------------------------
 \section{Conclusions}
@@ -864,60 +872,3 @@ Systems II at Columbia University.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \end{document}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-%%  LocalWords:  endnotes includegraphics fread ptr nobj noindent
-%%  LocalWords:  pdflatex acks
-
-%-------------------------------------------------------------------------------
-% \section{Floating Figures and Lists}
-% \label{sec:figs}
-%-------------------------------------------------------------------------------
-
-%---------------------------
-% \begin{figure}
-% \begin{center}
-% \begin{tikzpicture}
-%   \draw[thin,gray!40] (-2,-2) grid (2,2);
-%   \draw[<->] (-2,0)--(2,0) node[right]{$x$};
-%   \draw[<->] (0,-2)--(0,2) node[above]{$y$};
-%   \draw[line width=2pt,blue,-stealth](0,0)--(1,1)
-%         node[anchor=south west]{$\boldsymbol{u}$};
-%   \draw[line width=2pt,red,-stealth](0,0)--(-1,-1)
-%         node[anchor=north east]{$\boldsymbol{-u}$};
-% \end{tikzpicture}
-% \end{center}
-% \caption{\label{fig:vectors} Text size inside figure should be as big as
-%   caption's text. Text size inside figure should be as big as
-%   caption's text. Text size inside figure should be as big as
-%   caption's text. Text size inside figure should be as big as
-%   caption's text. Text size inside figure should be as big as
-%   caption's text. }
-% \end{figure}
-%% %---------------------------
-
-
-% Here's a typical reference to a floating figure:
-% Figure~\ref{fig:vectors}. Floats should usually be placed where latex
-% wants then. Figure\ref{fig:vectors} is centered, and has a caption
-% that instructs you to make sure that the size of the text within the
-% figures that you use is as big as (or bigger than) the size of the
-% text in the caption of the figures. Please do. Really.
-
-% In our case, we've explicitly drawn the figure inlined in latex, to
-% allow this tex file to cleanly compile. But usually, your figures will
-% reside in some file.pdf, and you'd include them in your document
-% with, say, \textbackslash{}includegraphics.
-
-% Lists are sometimes quite handy. If you want to itemize things, feel
-% free:
-
-% \begin{description}
-
-% \item[fread] a function that reads from a \texttt{stream} into the
-%   array \texttt{ptr} at most \texttt{nobj} objects of size
-%   \texttt{size}, returning returns the number of objects read.
-
-% \item[Fred] a person's name, e.g., there once was a dude named Fred
-%   who separated usenix.sty from this file to allow for easy
-%   inclusion.
-% \end{description}
