@@ -683,12 +683,111 @@ that the size of our regions would not impeed the host's ability to launch VMs. 
 by looking at other Linux memory allocators explicitly designed for the purpose
 of large contiguous allocations and adding such an allocator to the host.
 
-\subsection{Dynamic Page Manager}
+\subsection{Dynamic Page Manager - Overview}
 To enable dynamic allocation of EL2 memory in general beyond just the scope of
 a VM's stage-2 page tables, we also designed but did not fully implement
 a dynamic page manager (DPM). DPM is a system that exposes an interface for other ``services'' within EL2 to
 utilize dynamic allocation for their memory regions, while hiding the implementation of actually receiving memory from
-and returning memory to the host. This would be another interesting area of future work.
+and returning memory to the host. This would be another interesting area of future work. Please
+see the \textit{dpm} branch of the linked repository for a partial DPM implementation.
+
+By implementing a means by which EL2 can dynamically “request” and “hand back” contiguous
+regions of pages from EL1 arbitrarily, EL2 would no longer be limited to using statically allocated, fixed size regions.
+We propose the following Dynamic Page Manager (DPM) interface for EL1 and EL2 to interact over
+when dynamically allocating memory for EL2 to use arbitrarily.
+
+Other services within EL2 can use DPM to dynamically request contiguous regions of pages.
+These services will be responsible for managing the memory contents of these pages once DPM
+allocates the region to that specific service. The service will be required to signal DPM
+when that contiguous region is no longer in use which is similar to the kmalloc and kfree model.
+
+DPM operates at the contiguous region granularity rather than the page granularity because
+a lot of the existing SeKVM code assumes contiguous regions. If DPM were to instead piece
+together pages to form fragmented regions, all of this other code would break. Thus DPM
+can actually be thought of as a region manager rather than a page manager. DPM is structured
+in such a way that a second page-granularity version of DPM could operate alongside the
+region-granularity version of DPM thus allowing some services to remaining dependent on
+contiguous regions while others adapt to use separated regions in support of better memory
+utilization by EL2.
+
+\subsection{Dynamic Page Manager - Interface}
+Additional hypercalls accessible by EL1 host to DPM:
+
+\begin{itemize}
+\item Giving allocated pages from EL1 to EL2:
+\textit{hvc\_give\_pages(starting\_phys\_addr, page\_aligned region)}
+\item Reclaim unused pages from EL2 back to EL1:
+\textit{hvc\_reclaim\_pages(output\_struct\_array\_page\_starting\_phys\_addr)}
+All regions being handed back to the host are recorded in the return page which is
+passed by the host. Every physical address that EL2 records in this page is considered
+freed and no longer managed by DPM.
+\end{itemize}
+
+DPM Interface for usage internally by EL2 services:
+\begin{itemize}
+\item Requesting a contiguous region of a given size from the pool:
+\textit{dpm\_alloc\_region(region size)}:
+	Returns an address to the region if one was available in the pool,
+    and 0 to indicate error which the requesting service must propagate back to EL1
+\item
+\textit{dpm\_free\_region(starting\_region\_addr, optional: size)}:
+Returns a previously allocated region back to the pool from the EL2 service that used it
+\end{itemize}
+
+\subsection{Dynamic Page Manager - Metadata}
+\begin{verbatim}
+// DPM Overall Metadata
+struct dpm { // contained in struct el2_data
+    u64 base_page_addr; // Address to the first
+                        // dpm_region page
+    u64 region_count;   // number of regions currently
+                        // in the pool
+    u64 page_count;     // number of pages currently
+                        // in the pool
+};
+
+// DPM Region-specific Metadata
+struct dpm_region {
+    u64 start_addr; // addr to beginning of first
+                    // page in the region
+    u64 page_count; // number of pages in the region
+
+    u8 flags; // DXXX XXXA, where A is allocated flag,
+              // D is DPM flag meaning that region
+              // holds DPM metadata, X is available bit
+
+    struct dpm_region* prev; // consider changing
+                             // these to u64 physical addresses
+    struct dpm_region* next;
+};
+\end{verbatim}
+
+DPM manages regions of pages in form of a circular linked list. When an EL2 service requests
+a region of a specific size from DPM, DPM will search this list for an available match.
+If no matches are found, DPM returns an error indicating to the EL2 service that it must
+propogate the error back to the host. Upon receiving the error, the host will make an
+additional hypercall that passes a new region of some size to DPM. After restarting the original
+hypercall, DPM will successfully find a region to hand to the EL2 service.
+
+If the host is under a lot of memory pressure, the host can request that DPM give control
+of available regions back to the host. The host passes a page that DPM will populate with
+an array of metadata pertaining to regions that it is handing back. DPM will first unmap this
+page from the host. DPM will then search through the list for all available regions and add them
+to the page. DPM will finally remap the return page to the host and return. The host can then
+call \textit{free_pages} on all of the return regions.
+
+In order for DPM to receive pages that it needs for it's own metadata, if the host receives an
+error when trying to hand a region of some size to DPM, then the host will know that it needs
+to pass a region of size PAGE_SIZE first to DPM in a seperate hypercall and then retry the
+original region pass hypercall before finally retrying the original hypercall pertaining
+to some other EL2 service. When DPM receives a region and notices that it is out of metadata
+space, DPM will search for a region of PAGE_SIZE to claim for itself before processing
+the larger region. If one is found, then DPM will claim it and process the region hand off
+as normal.
+
+\subsection{Dynamic Page Manager - Considerations and Drawbacks}
+
+
 
 %-------------------------------------------------------------------------------
 \section{Conclusions}
