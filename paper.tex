@@ -449,9 +449,7 @@ and the entire second 1M region. Hence, the first PUD iterator points to an addr
 the first 1M region, and the second PUD Iterator points to the start of the
 second 1M region (Figures \ref{fig:firstmbregion}, \ref{fig:otherregions}). Finally, the PTE pool consumes the third to eighth 1M regions.
 As a result, there is a distinct PMD iterator for each of these six regions
-(Figure \ref{fig:otherregions}).
-
-The code below illustrates how allocations from a given pool are made using
+(Figure \ref{fig:otherregions}). The code below illustrates how allocations from a given pool are made using
 the first possible iterator whose pool subregion has not
 been exhausted:
 
@@ -608,26 +606,28 @@ all eight 1M regions are returned to the hostvisor. We compare the base address
 of each region allocated during VM creation against the base address of each
 region reclaimed during VM shutdown, and verify that they match each other.
 
-In order to make sure that the host can reasonably be expected to find 8x 1MB
-contiguous regions when booting a VM, we evaluated how many successful
-\textit{alloc\_pages(1MB)} calls could be made before failure. To reproduce our tests,
-simply compile host-sekvm-project with the \textit{ALLOC\_STRESS\_TEST} macro defined.
-Across our three trails, after booting host SeKVM with the FlexAlloc extension,
-we were able to achieve between 7049 and 7054 successful 1MB allocations
-from \textit{alloc\_pages(1MB)} calls. Since each VM only needs 8 successful allocations,
-we believe that the upperbound on the number of VM's due to potential \textit{alloc\_pages(1MB)}
+In order to verify that the hostvisor will generally be able to find eight distinct contiguous 1M regions when booting a VM, we evaluate how many times we can successfully call
+\textit{alloc\_pages(1M)} before a null pointer is returned. To reproduce our tests,
+simply compile \textit{host-sekvm-project} with the \textit{ALLOC\_STRESS\_TEST} macro defined.
+Across our three trials, after booting host SeKVM with the FlexAlloc extension,
+we were able to achieve between 7049 and 7054 successful 1M allocations
+from calls to \textit{alloc\_pages(1M)}. Since each VM only needs eight successful allocations for its stage-2 page table,
+we believe that the upper bound on the number of VMs we can create before running into \textit{alloc\_pages(1M)}
 failures is sufficiently high.
 
-We verified the changes in corevisor's memory footprint by checking the number of
-pages owned by the corevisor according to the \textit{s2\_pages} array in \textit{el2\_data} at key points
-throughout the VM boot and destruction processes. On a host running SeKVM without the
-FlexAlloc extension, we observed that the Corevisor owned 65549 pages before booting a VM,
+We also verify the changes in the corevisor's memory footprint by checking the number of
+pages owned by the corevisor, using the \textit{s2\_pages} array in \textit{el2\_data} at key points
+when a VM is created and destroyed. On a host running SeKVM without the
+FlexAlloc extension, we observe that the corevisor owns 65549 pages before booting a VM,
 while running a VM, and after destroying a VM. On a host running SeKVM with the FlexAlloc
-extension, we observed that the Corevisor owned 32768 pages before VM boot, 34817 pages
-during the life of the VM, and 32768 pages after destroying the VM. Note that FlexAlloc also
-reduces the static stage2\_region size in the linker script to zero as it is no longer needed.
-These findings show that FlexAlloc is able to successfully receive, use, and handback pages
-given by the host for usage exclusively as VM stage-2 page tables.
+extension, we observe that the Corevisor owns 32768 pages before VM boot, 34817 pages
+during the life of the VM, and 32768 pages after destroying the VM.
+Note that FlexAlloc also drastically reduces the size of the statically-allocated \textit{STAGE2\_PAGES\_SIZE} region in the linker script,
+since it now only needs to contain the stage-2 page tables of the hostvisor and the corevisor.
+These findings show that the corevisor in FlexAlloc is able to successfully receive, use, and return pages
+given to it by the hostvisor for constructing a VM's stage-2 page table.
+
+% 
 
 %-------------------------------------------------------------------------------
 \section{Shortcomings and Future Work}
