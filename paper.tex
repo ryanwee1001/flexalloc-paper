@@ -59,6 +59,9 @@
 % inlined bib file
 \usepackage{filecontents}
 
+\usepackage{graphicx}
+\graphicspath{ {./imgs/} }
+
 %-------------------------------------------------------------------------------
 \begin{filecontents}{\jobname.bib}
 %-------------------------------------------------------------------------------
@@ -154,7 +157,7 @@
 
 %for single author (just remove % characters)
 \author{
-{\rm Matthew Roger Nelson}\\
+{\rm Matthew Nelson}\\
 Columbia University
 \and
 {\rm Ryan Wee}\\
@@ -314,6 +317,14 @@ table for each VM is nicely page-aligned. With the \textit{struct el2\_vm\_info}
 is also not as significant, since we could easily make the array larger without
 incurring much memory overhead.
 
+Although the metadata structs have a much smaller memory footprint than the stage-2 page tables,
+we designed and partially implemented a fully generalized dynamic allocation interface that
+could be used to support dynamic allocation for all metadata structs which we call the
+Dynamic Page Manager (DPM). DPM handles all of the work required to receive and return
+memory from the hostvisor allowing other "services" in EL2 to exchange memory with DPM using
+a very similiar interface to the alloc_pages and free_pages interface available in EL1. We describe
+this interface in detail in Section 4.
+
 %-------------------------------------------------------------------------------
 \section{Design and Implementation}
 %-------------------------------------------------------------------------------
@@ -324,7 +335,7 @@ Our implementation of FlexAlloc is based on SeKVM, which is in turn based on Lin
 \subsection{Modifying the page table iterators}
 
 As described above, the original implementation of SeKVM statically
-allocates sixteen contiguous 8M regions to the corevisor. When a VM is created,
+allocates sixteen contiguous 8M regions to the corevisor (Figure \ref{fig:sekvmvmregions}). When a VM is created,
 the corevisor uses one of these contiguous 8M regions for the VM's stage-2
 page table. To implement a system of dynamic allocation, we want the hostvisor
 to dynamically reserve a contiguous 8M region at runtime when a VM is created, and then
@@ -339,6 +350,13 @@ limit is set by the kernel because \textit{alloc\_pages} uses the buddy allocato
 which recursively splits available memory into half to find the best possible position for
 a contiguous region of memory~\cite{kerneldocs}. However, this also makes it
 undesirable to continuously allocate huge contiguous regions of memory.
+
+\begin{figure}[h!tbp]
+\caption{SeKVM VM Stage-2 Page Table Region Layout, Statically Allocated}
+\label{fig:sekvmvmregions}
+\centering
+    \includegraphics{sekvm_vm_region}
+\end{figure}
 
 To get around this limitation, there are two possible approaches. The first approach
 is to halve the size of the VM's stage-2 page table, so that it can fit within
@@ -386,6 +404,73 @@ The number of iterators assigned to each level is based on the potential maximum
 pages that could be consumed at that level, along with how many distinct 1MB regions each level
 can be allocated from. When a page is allocated at a particular level, the correct iterator is chosen based on
 its assigned level and whether or not its preceding iterators have been exhausted.
+
+\begin{figure}[h!tbp]
+\caption{FlexAlloc: First 1MB Region Metadata Setup}
+\label{fig:firstmbregion}
+\centering
+    \includegraphics{firstmbregion}
+\end{figure}
+
+\begin{figure}[h!tbp]
+\caption{FlexAlloc: Second to Eigth 1MB Region Metadata Setup}
+\label{fig:otherregions}
+\centering
+    \includegraphics{otherregions}
+\end{figure}
+
+Each level's iterators have a set number of regions from which to pull additional pages from. Lower
+levels in the table have larger regions than higher levels in the table. When the current iterator
+over a given region is exhausted, the iterator will jump to the next available region and pick up
+where it left off.
+
+
+\begin{verbatim}
+static u64 inline get_pmd_next(u32 vmid) {
+    ...
+    // pool_index: available iterator
+    // we are using
+    pool_index =
+      el2_data->vm_info[vmid].pte_pool_index;
+    // pool_start: beginning of the region
+    // the pool_index corresponds to
+    pool_start =
+      el2_data->vm_info[vmid].
+      pte_pool_starts[pool_index];
+    // used_pages: number of pages in this
+    // region we have exhausted
+    used_pages = el2_data->vm_info[vmid]
+      .pte_used_pages_vm[pool_index];
+
+    // If we've used up all the pages and we
+    // have another region, then use the new region
+    if (used_pages == PTE_ITER_MAX_PAGES &&
+        pool_index + 1 < PTE_USED_ITER_COUNT) {
+        pool_index += 1;
+        el2_data->vm_info[vmid].
+          pte_pool_index = pool_index;
+
+        // Set the pool_start to the next available
+        // PTE iterator
+        pool_start = el2_data->vm_info[vmid].
+          pte_pool_starts[pool_index];
+        used_pages = el2_data->vm_info[vmid].
+          pte_used_pages_vm[pool_index];
+    }
+
+    // Make sure we have not exhausted all pages
+    // across all regions
+    if (used_pages == PTE_ITER_MAX_PAGES &&
+        pool_index == PTE_USED_ITER_COUNT - 1) {
+        __hyp_panic();
+    }
+
+    // Return the physical address of the next
+    // page that this iterator can allocate
+    return pool_start +
+      (used_pages * PAGE_SIZE);
+}
+\end{verbatim}
 
 The naming semantics of the iterators at each level can be confusing, so we feel it is worth
 clarifying here. The PGD iterator allocates pages to use as entries inside of a PGD page. This
