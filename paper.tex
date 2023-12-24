@@ -637,7 +637,7 @@ To fix this, FlexAlloc can simply have an added check that verifies all of the
 physical addresses received from the host are unique, 1MB aligned, and non-overlapping.
 
 Another key shortcoming of our design is that it does not fully implement
-dynamic memory partitioning between the corevisor and hostvisor. As mentioned in
+dynamic memory partitioning between the corevisor and hostvisor outside of stage-2 page tables for VMs. As mentioned in
 the introduction, another area in which corevisor memory scales with the number
 of VMs is in maintaining \textit{struct el2\_vm\_info} objects that record the
 metadata associated with each guest VM. Currently, we still statically allocate
@@ -646,7 +646,16 @@ memory ~\cite{hypsec_host.h}. This essentially preserves the hard cap on the
 number of guest VMs that can be run. An easy fix would be to keep this array
 as a statically-allocated array, while increasing the number of elements. Since each
 \textit{struct el2\_vm\_info} object is only 768 bytes, this would not waste a
-significant amount of memory even if fewer than sixteen VMs are created.
+significant amount of memory even if fewer than sixteen VMs are created. Regarding the
+\textit{shared\_data\_region}, since each VM requires a \textit{struct kvm}, the size of
+this region would either need to be dynamically allocated or the static size would
+need to be increases in order to lift the 16 VM cap present in SeKVM. However, since the static region
+size has been decreased by 128 MB within FlexAlloc and the size of \textit{struct kvm}'s is relatively
+small, inflating this region to accomodate 32+ VMs would still result in substantial memory savings
+thanks to FlexAlloc's changes. In the Future Work section, we propose a potential solution to
+the issue of bringing dynamic allocation to EL2 metadata structures that are not page aligned
+which we call DPM.
+
 
 \subsection{Shortcomings in evaluation}
 
@@ -657,28 +666,26 @@ to allocate 1M contiguous regions of memory past a certain point if memory
 pressure and external fragmentation are high. In this case, the hostvisor would
 not be able to allocate the memory regions needed for the corevisor to create
 the stage-2 page table for a new VM. We could perhaps delay this limit by breaking
-the VM stage-2 page tables down into even smaller regions of memory, but this would
-likely lead to more complicated logic when traversing the page table. In addition, we do not verify whether fragmenting the stage-2 page table results
-in any degradation in VM performance. Ideally, we would run a memory-intensive
+the VM stage-2 page tables down into even smaller regions of memory. In addition, we do not verify whether fragmenting the stage-2 page table results
+in any degradation in VM performance. Given the less-than-ideal test environment
+we have at our disposal, we did not investigate performance metrics related to execution time
+for our implementation and only considered memory footprint metrics. Ideally, we would run a memory-intensive
 benchmark on our guest VMs to verify that our iterators work properly under a
-high memory load. Finally, we do not quantify the change in corevisor memory usage.
-We assume that by not allocating the memory for VM stage-2 page tables at bootup,
-corevisor memory will automatically be reduced by an amount matching the
-size of this static allocation. This should be verified using actual data. For
-instance, we could periodically iterate over every page and see how many pages
-are owned by the corevisor before and after VM creation.
+high memory load across multiple VMs.
 
 \subsection{Future work}
 
 A possible area of future work is exploring other allocators designed for
 allocating large chunks of contiguous memory. We fragment the VM stage-2 page tables
 into eight distinct 1M pages, because \textit{alloc\_pages} does not allow us
-to allocate contiguous regions larger than 4M. It might be possile to avoid this
+to allocate contiguous regions larger than 4M. We also wanted to be reasonably certain
+that the size of our regions would not impeed the host's ability to launch VMs. It might be possile to avoid this
 by looking at other Linux memory allocators explicitly designed for the purpose
-of large contiguous allocations.
+of large contiguous allocations and adding such an allocator to the host.
 
+\subsection{Dynamic Page Manager}
 To enable dynamic allocation of EL2 memory in general beyond just the scope of
-a VM's stage-2 page tables, we also designed but did not implement
+a VM's stage-2 page tables, we also designed but did not fully implement
 a dynamic page manager (DPM). DPM is a system that exposes an interface for other ``services'' within EL2 to
 utilize dynamic allocation for their memory regions, while hiding the implementation of actually receiving memory from
 and returning memory to the host. This would be another interesting area of future work.
