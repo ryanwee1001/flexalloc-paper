@@ -318,13 +318,15 @@ table for each VM is nicely page-aligned. With the \textit{struct el2\_vm\_info}
 is also not as significant, since we could easily make the array larger without
 incurring much memory overhead.
 
-Although the metadata structs have a much smaller memory footprint than the stage-2 page tables,
-we designed and partially implemented a fully generalized dynamic allocation interface that
-could be used to support dynamic allocation for all metadata structs which we call the
-Dynamic Page Manager (DPM). DPM handles all of the work required to receive and return
-memory from the hostvisor allowing other "services" in EL2 to exchange memory with DPM using
+Although the \textit{struct el2\_vm\_info} objects have a much smaller memory footprint than the stage-2 page tables,
+we designed and partially implemented a fully-generalized dynamic allocation interface that
+could be used to support dynamic allocation for all metadata structs. We call this the
+Dynamic Page Manager (DPM). DPM handles all of the work required to receive memory from and return
+memory to the hostvisor, allowing other ``services'' in EL2 to exchange memory with the DPM using
 a very similiar interface to the \textit{alloc\_pages} and \textit{free\_pages} interface available in EL1. We describe
-this interface in detail in Section 4.
+this interface in detail in Section 4. However, the next section focuses
+exclusively on the changes made to support dynamic allocation of the memory
+needed for VM stage-2 page tables.
 
 %-------------------------------------------------------------------------------
 \section{Design and Implementation}
@@ -339,7 +341,7 @@ As described above, the original implementation of SeKVM statically
 allocates sixteen contiguous 8M regions to the corevisor (Figure \ref{fig:sekvmvmregions}). When a VM is created,
 the corevisor uses one of these contiguous 8M regions for the VM's stage-2
 page table. To implement a system of dynamic allocation, we want the hostvisor
-to dynamically reserve a contiguous 8M region at runtime when a VM is created, and then
+to dynamically reserve an 8M region at runtime when a VM is created, and then
 pass this memory region to the corevisor. The kernel macro \textit{alloc\_pages}
 is responsible for allocating a large number of contiguous physical pages~\cite{kerneldocs}.
 Examining the implementation of this macro reveals that it eventually
@@ -373,40 +375,58 @@ other 1M regions. As a result, the hostvisor can easily use \textit{alloc\_pages
 to allocate the memory needed for a guest VM's stage-2 page tables.
 
 We implement this fragmentation by manipulating the iterators that provide the next useable
-page at a given level. These iterators are used when traversing the stage-2 page table in order to record
-an additional entry. In the original SeKVM implementation, the pages in each level of the stage-2 page table are
-kept contiguous to one another, and never intermixed with pages from other levels.
-Each iterator starts at a particular offset into the VM's statically allocated stage-2
-page table region, and increments each time a new entry is consumed at that level. The design of these iterators means that they are limited to
-only operating within a large, contiguous region. In particular, the PGD iterator operates over a \textit{16 * PAGE\_SIZE} region, the PUD
-iterator operates over a \textit{SZ\_2M - (16 * PAGE\_SIZE)} region, and the PMD iterator operates over a \textit{3 * SZ\_2M} region.
+page for entries at a given level of the page table. In the original SeKVM implementation, the pages containing entries from some level of the stage-2 page table are
+kept contiguous to one another, and are never intermixed with pages containing entries from other levels. Hence, there are distinct iterators for each level.
+Each iterator starts at a particular offset into the VM's statically-allocated 8M stage-2
+page table region, and increments each time we need a new page for a new entry at that level. In particular, the PGD iterator operates over a \textit{16 * PAGE\_SIZE} pool, the PUD
+iterator operates over a \textit{SZ\_2M - (16 * PAGE\_SIZE)} pool, and the PMD iterator operates over a \textit{3 * SZ\_2M} pool.
+Each of these pools must be contiguous, and the three pools must be contiguous relative to one another.
 
-In contrast, our design eliminates the need for all of these subregions to be contiguous to
-one another and enables fragmentation within each subregion itself. Each iterator can be thought of as a page allocator specific to VM stage-2
-page tables, and operates over a pool of eight, non-contiguous 1MB regions. The FlexAlloc iterators
-first exhaust all pages from a given 1MB region. Once the current 1MB region is exhausted, FlexAlloc
-will jump the iterators to the next 1MB region in the pool. Subsequent traversals of the
-stage-2 page tables with the alloc flag enabled will pull pages from the seperate, second
-non-contiguous 1M region. By removing the requirement for contiguous 8MB regions, FlexAlloc
-enables reliable dynamic allocation of stage-2 page table regions.
+The naming semantics of the iterators at each level can be confusing, so we feel they are worth
+clarifying here. The iterator for level $n$ allocates pages for entries in level $n$ to point to.
+Hence, the iterator for level $n$ points to the pool used to allocate
+entries belonging to level $n-1$. For instance, the PGD iterator allocates pages
+for PGD entries to point to. In other words, the PGD iterator actually allocates
+pages used to hold PUD entries. Hence, the PGD iterator is initialized to point to the start of the PUD pool.
 
-We implement two versions of the FlexAlloc iterators. In the first version, we use a single,
-generalized iterator shared across all levels of the stage-2 page table. In the SeKVM implementation,
-the iterators are structured such that a PUD page will never be sandwiches between two PMD pages.
-The first version of the FlexAlloc iterators ignores this semantic and instead is non-discriminatory
-in regards to the particular level a page will be used in. However, we eventually decided to stop development of this
+Our design eliminates the need for all of these pools to be contiguous to
+one another, and enables fragmentation within each pool itself. To achieve this goal,
+we experiment with two distinct implementations. As mentioned above, the SeKVM implementation
+structures iterators such that a page with PUD entries will never be sandwiched between a page with PMD entries.
+In our first implementation, we ignore this semantic. In particular, we create a single,
+generalized iterator shared across all levels of the stage-2 page table. This
+iterator traverses all eight 1M regions. When it exhausts the space in a 1M region, it moves
+to the start of the next 1M region. However, we eventually decided to stop development of this
 version before it was fully functional, in favor of version two which more closely resembles recent changes made to SeKVM's
 stage-2 page table allocation scheme.
 
-In the second implementation, we opt to enforce the semantic that pages at each specific level are
-allocated from seperate pools, and thus never intermixed with one another. To accomplish this while still maintaining the same pool of non-contiguous 1MB regions,
-we split the single, general iterator into nine distinct iterators. One iterator is used
-for PUD pages, two iterators are used for PMD pages, and six iterators are used for PTE pages.
-The number of iterators assigned to each level is based on the potential maximum number of
-pages that could be consumed at that level, along with how many distinct 1MB regions each level
-can be allocated from. When a page is allocated at a particular level, the correct iterator is chosen based on
-its assigned level and whether or not its preceding iterators have been exhausted.
+In our second implementation, we enforce the semantic that pages at each specific level are
+allocated from seperate pools, and thus are never intermixed with one another. To accomplish
+this while still maintaining the same pool of non-contiguous 1MB regions,
+we split the single, generalized iterator into nine distinct iterators. 
+One PGD iterator is used to allocate pages from the PUD pool, two PUD iterators are used to allocate pages from the PMD pool,
+and six PMD iterators are used to allocate pages from the PTE pool. There are two key things to
+note here. First, we retain the existing scheme partitioning the stage-2 page table into
+three distinct pools: a PUD pool, a PMD pool, and a PTE pool.
+For instance, the PUD pool is still sized at \textit{16 * PAGE\_SIZE}. The
+second key thing to note is that our iterators never cross the boundary
+between two distinct 1M regions. Instead, if a pool needs to be split across
+two or more 1M regions, there is one distinct iterator for each 1M region
+covered by the pool. As a result, each of these iterators covers a contiguous subregion of the pool.
+Allocations from that pool begin by using the first iterator. When the first
+subregion of that pool is exhausted, allocations move on to use the next iterator.
+Essentially, when a page is allocated from a given pool, the correct iterator is chosen based on
+the pool in question and whether or not the preceding iterators for that pool have been exhausted.
 
+% We do that by modfifying , the FlexAlloc
+% iterators operate over a pool of eight non-contiguous 1MB regions. The FlexAlloc iterators
+% first exhaust all entries from a given 1MB region. Once the current 1MB region is exhausted, FlexAlloc
+% will jump the iterators to the next 1MB region in the pool. Subsequent traversals of the
+% stage-2 page tables with the alloc flag enabled will pull pages from the seperate, second
+% non-contiguous 1M region. By removing the requirement for contiguous 8MB regions, FlexAlloc
+% enables reliable dynamic allocation of stage-2 page table regions.
+
+\bigskip
 \begin{figure}[h!tbp]
 \centering
 \captionsetup{justification=centering}
@@ -419,15 +439,21 @@ its assigned level and whether or not its preceding iterators have been exhauste
 \centering
 \captionsetup{justification=centering}
 \includegraphics{otherregions}
-\caption{FlexAlloc: Metadata Setup\\for Second to Eigth 1MB Regions}
+\caption{FlexAlloc: Metadata Setup\\for Second to Eighth 1MB Regions}
 \label{fig:otherregions}
 \end{figure}
 
-\bigskip Each level's iterators have a set number of regions from which to pull additional pages from. Lower
-levels in the table have larger regions than higher levels in the table. When the current iterator
-over a given region is exhausted, the iterator will jump to the next available region and pick up
-where it left off.
+In particular, the PUD pool is in the middle of the first 1M region, and there is a single PGD iterator
+pointing to the start of that pool (Figure \ref{fig:firstmbregion}). The PMD pool consumes the end of the first 1M region
+and the entire second 1M region. Hence, the first PUD iterator points to an address in
+the first 1M region, and the second PUD Iterator points to the start of the
+second 1M region (Figures \ref{fig:firstmbregion}, \ref{fig:otherregions}). Finally, the PTE pool consumes the third to eighth 1M regions.
+As a result, there is a distinct PMD iterator for each of these six regions
+(Figure \ref{fig:otherregions}).
 
+The code below illustrates how allocations from a given pool are made using
+the first possible iterator whose pool subregion has not
+been exhausted:
 
 \begin{verbatim}
 static u64 inline get_pmd_next(u32 vmid) {
@@ -480,12 +506,6 @@ static u64 inline get_pmd_next(u32 vmid) {
 }
 \end{verbatim}
 
-The naming semantics of the iterators at each level can be confusing, so we feel it is worth
-clarifying here. The PGD iterator allocates pages to use as entries inside of a PGD page. This
-implies that the PGD iterator, as an example, actually allocates pages that are used in the
-subsequent level, which in this case is the PUD. All iterators follow the pattern of allocating
-pages for a given level to point to. These are actually pages in the next level
-of the stage-2 page tables.
 
 \subsection{Allocating memory to the corevisor}
 
