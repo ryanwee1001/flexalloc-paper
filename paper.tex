@@ -756,8 +756,7 @@ struct dpm_region {
               // D is DPM flag meaning that region
               // holds DPM metadata, X is available bit
 
-    struct dpm_region* prev; // consider changing
-                             // these to u64 physical addresses
+    struct dpm_region* prev;
     struct dpm_region* next;
 };
 \end{verbatim}
@@ -774,19 +773,31 @@ of available regions back to the host. The host passes a page that DPM will popu
 an array of metadata pertaining to regions that it is handing back. DPM will first unmap this
 page from the host. DPM will then search through the list for all available regions and add them
 to the page. DPM will finally remap the return page to the host and return. The host can then
-call \textit{free_pages} on all of the return regions.
+call \textit{free\_pages} on all of the return regions.
 
 In order for DPM to receive pages that it needs for it's own metadata, if the host receives an
 error when trying to hand a region of some size to DPM, then the host will know that it needs
-to pass a region of size PAGE_SIZE first to DPM in a seperate hypercall and then retry the
+to pass a region of size \textit{PAGE\_SIZE} first to DPM in a seperate hypercall and then retry the
 original region pass hypercall before finally retrying the original hypercall pertaining
 to some other EL2 service. When DPM receives a region and notices that it is out of metadata
-space, DPM will search for a region of PAGE_SIZE to claim for itself before processing
+space, DPM will search for a region of \textit{PAGE\_SIZE} to claim for itself before processing
 the larger region. If one is found, then DPM will claim it and process the region hand off
 as normal.
 
 \subsection{Dynamic Page Manager - Considerations and Drawbacks}
-
+DPM allows for arbitrary request of regions from EL2 which is valuable when we may or may not
+need additional pages. If we know some hypercall will require EL2 to receive more pages,
+the error-check-retry pathway may be an unnecessary cost. For example, when we want to
+boot a new VM, we know EL2 will need a stage 2 region for the VM. However, since DPM allows
+regions to be reused after they are made available again, a new VM launch can reuse the
+region from a previously shutdown VM. DPM is designed make it convenient to program against,
+but it’s generalized strategy can lead to extra, avoidable work. We designed DPM with
+programmability in mind over efficiency in hopes that it would make full dynamic allocation
+attainable for SeKVM services by avoiding excessively customized hand offs between the host
+and corevisor. Although we only partially implemented DPM, it would be interesting to
+compare the real-world performance metrics between our current stage-2 dynamic allocation
+strategy and a stage-2 dynamic allocation strategy built on top of DPM and a
+check-error-retry methodology.
 
 
 %-------------------------------------------------------------------------------
