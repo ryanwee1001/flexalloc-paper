@@ -768,6 +768,14 @@ propogate the error back to the host. Upon receiving the error, the host will ma
 additional hypercall that passes a new region of some size to DPM. After restarting the original
 hypercall, DPM will successfully find a region to hand to the EL2 service.
 
+\begin{figure}[h!tbp]
+\centering
+\captionsetup{justification=centering}
+\includegraphics{dpmmetadata}
+\caption{FlexAlloc: DPM Metadata Organization}
+\label{fig:dpmmetadata}
+\end{figure}
+
 If the host is under a lot of memory pressure, the host can request that DPM give control
 of available regions back to the host. The host passes a page that DPM will populate with
 an array of metadata pertaining to regions that it is handing back. DPM will first unmap this
