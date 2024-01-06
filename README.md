@@ -2,6 +2,8 @@
 
 This repository contains the TeX files used to generate the FlexAlloc research paper. For the FlexAlloc source code, see [this repository](https://github.com/nelsonm2991/host-sekvm-project).
 
+The final paper can be viewed [here](./paper.pdf).
+
 ## Usage
 
 To compile the paper, run:
